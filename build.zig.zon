@@ -1,0 +1,11 @@
+.{
+    .name = "ESPAT",
+    .version = "0.0.1-alpha",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "src/util",
+    },
+}

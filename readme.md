@@ -10,16 +10,16 @@ __Minimum AT Firmware Version__: 2.2.0.0
 ## Get started
 
 ### Porting
-TODO: Generic port
-TODO: microzig port
+TODO: Generic port  
+TODO: microzig port  
 
 ### Basic WiFi config
-TODO: wiFi modes
-TODO: configure AP doc
-TODO: configure: STA doc
+TODO: wiFi modes  
+TODO: configure AP doc  
+TODO: configure: STA doc  
 
 ### Basic network
-TODO: TCP/UDP/SSL client Doc
-TODO: TCP/UDP/SSL server Doc
-TODO: TCP/UDP/SSL client AND server coexistence Doc
+TODO: TCP/UDP/SSL client Doc  
+TODO: TCP/UDP/SSL server Doc  
+TODO: TCP/UDP/SSL client AND server coexistence Doc  
 

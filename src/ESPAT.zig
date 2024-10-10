@@ -181,7 +181,6 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         TX_callback_handler: TX_callback,
         RX_callback_handler: RX_callback,
         machine_state: Drive_states = .init,
-        RX_aux_buffer: Circular_buffer.create_buffer(u8, 50) = .{},
         event_aux_buffer: Circular_buffer.create_buffer(commands_enum, 10) = .{},
         busy_flag: bool = false,
 
@@ -200,52 +199,47 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         on_cmd_response: ?*const fn (result: CommandResults, cmd: commands_enum) void = null,
         on_WiFi_respnse: ?*const fn (event: WifiEvent) void = null,
 
-        fn get_cmd_type(self: *Self) void {
+        fn get_cmd_type(self: *Self, aux_buffer: []const u8) void {
             var result: ?usize = null;
-            const RX_aux_buffer = self.RX_aux_buffer.raw_buffer();
             const cmd_len = COMMANDS_RESPOSES_TOKENS.len;
             for (0..cmd_len) |COMMAND| {
-                result = std.mem.indexOf(u8, RX_aux_buffer, COMMANDS_RESPOSES_TOKENS[COMMAND]);
-                if (result) |index| {
-                    self.exec_cmd(COMMAND, index);
+                result = std.mem.indexOf(u8, aux_buffer, COMMANDS_RESPOSES_TOKENS[COMMAND]);
+                if (result) |_| {
+                    self.exec_cmd(COMMAND, aux_buffer);
                 }
             }
         }
 
-        fn exec_cmd(self: *Self, cmd_id: usize, buffer_index: usize) void {
-            _ = buffer_index;
+        fn exec_cmd(self: *Self, cmd_id: usize, aux_buffer: []const u8) void {
             switch (cmd_id) {
                 0 => self.command_response(CommandResults.Ok),
                 1 => self.command_response(CommandResults.Error),
-                2 => self.wifi_response(),
-                3 => self.network_event(NetworkHandlerState.Connected),
-                4 => self.network_event(NetworkHandlerState.Closed),
+                2 => self.wifi_response(aux_buffer),
+                3 => self.network_event(NetworkHandlerState.Connected, aux_buffer),
+                4 => self.network_event(NetworkHandlerState.Closed, aux_buffer),
                 else => unreachable,
             }
-            self.RX_aux_buffer.clear();
         }
 
         //TODO: remove external use of RX_aux_buffer, recive a slice insted
-        fn get_cmd_data_type(self: *Self) void {
+        fn get_cmd_data_type(self: *Self, aux_buffer: []const u8) void {
             var result: ?usize = null;
-            const RX_aux_buffer = self.RX_aux_buffer.raw_buffer();
             for (0..COMMAND_DATA_TYPES.len) |COMMAND| {
-                result = std.mem.indexOf(u8, RX_aux_buffer, COMMAND_DATA_TYPES[COMMAND]);
-                if (result) |index| {
-                    self.read_cmd_data(COMMAND, index);
+                result = std.mem.indexOf(u8, aux_buffer, COMMAND_DATA_TYPES[COMMAND]);
+                if (result) |_| {
+                    self.read_cmd_data(COMMAND, aux_buffer);
                 }
             }
         }
 
         //TODO: ADD more responses
-        fn read_cmd_data(self: *Self, cmd_id: usize, buffer_index: usize) void {
+        fn read_cmd_data(self: *Self, cmd_id: usize, aux_buffer: []const u8) void {
             switch (cmd_id) {
-                0 => self.parse_network_data(buffer_index),
+                0 => self.parse_network_data(aux_buffer),
                 1 => self.WiFi_get_AP_info(),
                 2 => self.WiFi_error(),
                 else => {},
             }
-            self.RX_aux_buffer.clear();
         }
         fn command_response(self: *Self, state: CommandResults) void {
             const cmd_result = self.event_aux_buffer.get() catch return;
@@ -263,15 +257,14 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         //TODO: add error check on invalid input
-        fn wifi_response(self: *Self) void {
+        fn wifi_response(self: *Self, aux_buffer: []const u8) void {
             self.busy_flag = false;
             var inner_buffer: [50]u8 = std.mem.zeroes([50]u8);
-            const wifi_buffer = self.RX_aux_buffer.raw_buffer();
             var index: usize = 0;
             var result: ?usize = null;
             var tx_event: ?WifiEvent = null;
             for (WIFI_RESPOSE_TOKEN) |TOKEN| {
-                result = std.mem.indexOf(u8, wifi_buffer, TOKEN);
+                result = std.mem.indexOf(u8, aux_buffer, TOKEN);
                 if (result != null) {
                     break;
                 }
@@ -299,16 +292,16 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         //ADD more WiFi events
         fn WiFi_get_AP_info(self: *Self) void {
-            self.RX_aux_buffer.clear();
             var data: u8 = 0;
+            var aux_buffer: Circular_buffer.create_buffer(u8, 50) = .{};
             while (data != '\n') {
                 data = self.RX_buffer.get() catch {
                     self.RX_callback_handler(&self.RX_buffer);
                     continue;
                 };
-                self.RX_aux_buffer.push(data) catch return;
+                aux_buffer.push(data) catch return;
             }
-            const inner_buffer = self.RX_aux_buffer.raw_buffer();
+            const inner_buffer = aux_buffer.raw_buffer();
             const nettype = inner_buffer[0];
             const ip_flag = nettype == 'i';
             const out_pointer: *[16]u8 = switch (nettype) {
@@ -355,9 +348,8 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         //TODO: add error check on invalid input
-        fn parse_network_data(self: *Self, start_index: usize) void {
-            const data_buffer = self.RX_aux_buffer.raw_buffer();
-            var slices = std.mem.split(u8, data_buffer[start_index..], ",");
+        fn parse_network_data(self: *Self, aux_buffer: []const u8) void {
+            var slices = std.mem.split(u8, aux_buffer, ",");
             _ = slices.next();
 
             //TODO: add error checking
@@ -405,11 +397,10 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         //TODO: ADD ERROR CHECK on invalid input
-        fn network_event(self: *Self, state: NetworkHandlerState) void {
-            const buffer = self.RX_aux_buffer.raw_buffer();
-            const id_index = std.mem.indexOf(u8, buffer, ",");
+        fn network_event(self: *Self, state: NetworkHandlerState, aux_buffer: []const u8) void {
+            const id_index = std.mem.indexOf(u8, aux_buffer, ",");
             if (id_index) |id| {
-                const index: usize = buffer[id - 1] - '0';
+                const index: usize = aux_buffer[id - 1] - '0';
                 if (self.Network_binds[index]) |*bd| {
                     bd.state = state;
                     if (bd.event_callback) |callback| {
@@ -478,26 +469,29 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         fn IDLE_REV(self: *Self) void {
             var data: u8 = 0;
+            var RX_aux_buffer: Circular_buffer.create_buffer(u8, 50) = .{};
             while (true) {
                 data = self.RX_buffer.get() catch break;
-                if (data == '\n') {
-                    if (self.RX_aux_buffer.get_data_size() >= 3) {
-                        self.get_cmd_type();
-                    }
-                    self.RX_aux_buffer.clear();
-                    return;
-                } else if (data == ':') {
-                    if (self.RX_aux_buffer.get_data_size() > 3) {
-                        self.get_cmd_data_type();
-                    }
-                    self.RX_aux_buffer.clear();
-                    return;
-                } else if (data == '>') {
-                    self.network_send_data();
-                    self.RX_aux_buffer.clear();
-                    return;
+                switch (data) {
+                    '\n' => {
+                        if (RX_aux_buffer.get_data_size() >= 3) {
+                            self.get_cmd_type(RX_aux_buffer.raw_buffer());
+                        }
+                        RX_aux_buffer.clear();
+                        return;
+                    },
+                    ':' => {
+                        self.get_cmd_data_type(RX_aux_buffer.raw_buffer());
+                        RX_aux_buffer.clear();
+                        return;
+                    },
+                    '>' => {
+                        self.network_send_data();
+                        RX_aux_buffer.clear();
+                        return;
+                    },
+                    else => RX_aux_buffer.push_overwrite(data),
                 }
-                self.RX_aux_buffer.push_overwrite(data);
             }
         }
 
@@ -511,7 +505,6 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             //clear buffers
             self.TX_buffer.clear();
             self.RX_buffer.clear();
-            self.RX_aux_buffer.clear();
             self.event_aux_buffer.clear();
 
             //desable ECHO

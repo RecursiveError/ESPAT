@@ -45,10 +45,13 @@ pub const commands_enum = enum(u8) {
     WIFI_AUTOCONN,
     NETWORK_CONNECT,
     NETWORK_SEND,
+    NETWORK_SEND_RESP,
     NETWORK_CLOSE,
     NETWORK_IP,
     NETWORK_SERVER_CONF,
     NETWORK_SERVER,
+    //Extra
+
 };
 
 //This is not necessary since the user cannot send commands directly
@@ -62,6 +65,7 @@ pub const COMMANDS_TOKENS = [_][]const u8{
     "CWAUTOCONN",
     "CIPSTART",
     "CIPSEND",
+    "SEND",
     "CIPCLOSE",
     "CIPSTA",
     "CIPSERVERMAXCONN",
@@ -125,16 +129,21 @@ pub const NetworkHandlerType = enum {
 };
 
 //TODO: add more config
-//TODO: delete server
 //TODO: add Restart driver
 //TODO: add eneble_IPv6 func
 pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: comptime_int, comptime Wifi_type: WiFiDriverType, comptime network_type: NetworkDriveType) type {
     if (RX_SIZE <= 50) @compileError("RX SIZE CANNOT BE LESS THAN 50 byte");
     if (network_pool_size <= 5) @compileError(" NETWORK POOL SIZE CANNOT BE LESS THAN 5 events");
+    const max_binds = switch (network_type) {
+        .SERVER_CLIENT => 3,
+        .SERVER_ONLY => 5,
+        .CLIENT_ONLY => 0,
+    };
     return struct {
 
         // data types
         const Self = @This();
+        const div_binds = max_binds;
         pub const Client = struct {
             id: u8,
             driver: *Self,
@@ -182,9 +191,6 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         //network data
         Network_binds: [5]?network_handler = .{ null, null, null, null, null },
         Network_pool: Circular_buffer.create_buffer(NetworkPackage, network_pool_size) = .{},
-        NetWork_get_remain_data: usize = 0,
-        NetWork_push_remain_data: usize = 0,
-        NetWork_id: usize = 0,
         network_AP_ip: [16]u8 = .{0} ** 16,
         network_AP_gateway: [16]u8 = .{0} ** 16,
         network_AP_mask: [16]u8 = .{0} ** 16,
@@ -243,6 +249,14 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
         fn command_response(self: *Self, state: CommandResults) void {
             const cmd_result = self.event_aux_buffer.get() catch return;
+
+            //delete pkg if send fail
+            if ((state == .Error) and (cmd_result == .NETWORK_SEND)) {
+                const to_delete = self.Network_pool.get() catch return;
+                if (to_delete.data) |data| {
+                    self.inner_alloc.free(data);
+                }
+            }
             if (self.on_cmd_response) |callback| {
                 callback(state, cmd_result);
             }
@@ -579,11 +593,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         pub fn bind(self: *Self, net_type: NetworkHandlerType, event_callback: *const fn (client: Client) void) NetworkError!u8 {
-            const start_bind: usize = switch (network_type) {
-                .CLIENT_ONLY => 0,
-                .SERVER_CLIENT => 3,
-                .SERVER_ONLY => self.Network_binds.len,
-            };
+            const start_bind = div_binds;
 
             for (start_bind..self.Network_binds.len) |index| {
                 if (self.Network_binds[index]) |_| {
@@ -637,11 +647,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             var inner_buffer: [50]u8 = .{0} ** 50;
             if (network_type == NetworkDriveType.CLIENT_ONLY) return DriverErros.SERVER_OFF;
 
-            const end_bind: usize = switch (network_type) {
-                .SERVER_CLIENT => 3,
-                .SERVER_ONLY => self.Network_binds.len,
-                else => unreachable,
-            };
+            const end_bind = div_binds;
 
             _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=1,{d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER)], port, postfix });
             try self.event_aux_buffer.push(commands_enum.NETWORK_SERVER);
@@ -652,6 +658,34 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                     .NetworkHandlerType = NetworkHandlerType.TCP,
                     .event_callback = event_callback,
                 };
+            }
+        }
+
+        pub fn delete_server(self: *Self) !void {
+            var inner_buffer: [50]u8 = .{0} ** 50;
+            const end_bind = div_binds;
+
+            //send close server command
+            _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=0,1{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER)], postfix });
+            try self.event_aux_buffer.push(commands_enum.NETWORK_SERVER);
+            try self.TX_buffer.push(inner_buffer);
+
+            //clear all server binds
+            for (0..end_bind) |id| {
+                self.Network_binds[id] = null;
+            }
+
+            //clear all server pkgs
+            const pool_size = self.Network_pool.get_data_size();
+            for (0..pool_size) |_| {
+                const pkg = self.Network_pool.get() catch return;
+                if (pkg.descriptor_id < end_bind) {
+                    if (pkg.data) |data| {
+                        self.inner_alloc.free(data);
+                    }
+                } else {
+                    self.Network_pool.push(pkg);
+                }
             }
         }
 
@@ -668,10 +702,11 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 .descriptor_id = id,
             };
             try self.Network_pool.push(pkg);
-            try self.event_aux_buffer.push(commands_enum.NETWORK_CONNECT);
 
             _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}={d},{d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SEND)], id, data.len, postfix });
+            //Send return OK before data send and after data send (<- send OK)
             try self.event_aux_buffer.push(commands_enum.NETWORK_SEND);
+            try self.event_aux_buffer.push(commands_enum.NETWORK_SEND_RESP);
             try self.TX_buffer.push(inner_buffer);
         }
 

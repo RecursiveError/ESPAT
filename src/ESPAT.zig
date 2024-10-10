@@ -1,8 +1,6 @@
 const std = @import("std");
 pub const Circular_buffer = @import("util/circular_buffer.zig");
 
-//TODO: add more error types
-pub const NetworkError = error{ MAX_BINDS, ALLOC_ERROR, NULL_BIND, INVALID_TYPE };
 pub const DriverError = error{
     WIFI_OFF,
     BUSY,
@@ -15,10 +13,16 @@ pub const DriverError = error{
     RX_BUFFER_FULL,
     TX_BUFFER_FULL,
     TASK_BUFFER_FULL,
+    NETWORK_BUFFER_FULL,
     AUX_BUFFER_EMPTY,
     NETWORK_BUFFER_EMPTY,
     INVALID_RESPONSE,
     ALLOC_FAIL,
+    MAX_BIND,
+    INVALID_BIND,
+    INVALID_NETWORK_TYPE,
+    INVALID_ARGS,
+    UNKNOWN_ERROR,
 };
 pub const NetworkDriveType = enum {
     SERVER_ONLY,
@@ -156,11 +160,11 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             event: NetworkEvent,
             rev: ?[]const u8 = null,
 
-            pub fn send(self: *const Client, data: []const u8) !void {
+            pub fn send(self: *const Client, data: []const u8) DriverError!void {
                 try self.driver.send(self.id, data);
             }
 
-            pub fn close(self: *const Client) !void {
+            pub fn close(self: *const Client) DriverError!void {
                 try self.driver.close(self.id);
             }
         };
@@ -594,7 +598,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             try self.TX_buffer.push(inner_buffer);
         }
 
-        pub fn bind(self: *Self, net_type: NetworkHandlerType, event_callback: *const fn (client: Client) void) NetworkError!u8 {
+        pub fn bind(self: *Self, net_type: NetworkHandlerType, event_callback: *const fn (client: Client) void) DriverError!u8 {
             const start_bind = div_binds;
 
             for (start_bind..self.Network_binds.len) |index| {
@@ -611,13 +615,13 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                     return id;
                 }
             }
-            return NetworkError.MAX_BINDS;
+            return DriverError.MAX_BINDS;
         }
 
         //TODO: ADD IPv6
-        pub fn connect(self: *Self, id: u8, host: []const u8, port: u16) !void {
+        pub fn connect(self: *Self, id: u8, host: []const u8, port: u16) DriverError!void {
             if (self.busy_flag) return DriverError.BUSY;
-            if (id > self.Network_binds.len) return NetworkError.NULL_BIND;
+            if (id > self.Network_binds.len) return DriverError.INVALID_BIND;
             var inner_buffer: [50]u8 = .{0} ** 50;
             if (self.Network_binds[id]) |bd| {
                 const net_type = switch (bd.NetworkHandlerType) {
@@ -625,35 +629,42 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                     .TCP => "TCP",
                     .UDP => "UDP",
                     .None => {
-                        return NetworkError.INVALID_TYPE;
+                        return DriverError.INVALID_TYPE;
                     },
                 };
-                _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}={d},\"{s}\",\"{s}\",{d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_CONNECT)], id, net_type, host, port, postfix });
-                try self.event_aux_buffer.push(commands_enum.NETWORK_CONNECT);
-                try self.TX_buffer.push(inner_buffer);
+                _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}={d},\"{s}\",\"{s}\",{d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_CONNECT)], id, net_type, host, port, postfix }) catch return DriverError.INVALID_ARGS;
+                self.event_aux_buffer.push(commands_enum.NETWORK_CONNECT) catch return DriverError.TASK_BUFFER_FULL;
+                self.TX_buffer.push(inner_buffer) catch return DriverError.TX_BUFFER_FULL;
             } else {
-                return NetworkError.NULL_BIND;
+                return DriverError.INVALID_BIND;
             }
         }
 
-        pub fn close(self: *Self, id: u8) !void {
+        pub fn close(self: *Self, id: u8) DriverError!void {
             var inner_buffer: [50]u8 = .{0} ** 50;
-            _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}={d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_CLOSE)], id, postfix });
-            try self.event_aux_buffer.push(commands_enum.NETWORK_CLOSE);
-            try self.TX_buffer.push(inner_buffer);
+            _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}={d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_CLOSE)], id, postfix }) catch return DriverError.INVALID_ARGS;
+            self.event_aux_buffer.push(commands_enum.NETWORK_CLOSE) catch return DriverError.TASK_BUFFER_FULL;
+            self.TX_buffer.push(inner_buffer) catch return DriverError.TX_BUFFER_FULL;
         }
 
         //TODO: add server type param (TCP, TCP6, SSL, SSL6)
-        pub fn create_server(self: *Self, port: u16, event_callback: *const fn (client: Client) void) !void {
-            if (self.busy_flag) return DriverError.BUSY;
+        pub fn create_server(self: *Self, port: u16, server_type: NetworkHandlerType, event_callback: *const fn (client: Client) void) DriverError!void {
+            const end_bind = div_binds;
             var inner_buffer: [50]u8 = .{0} ** 50;
+
+            const net_type: []const u8 = switch (server_type) {
+                .SSL => "SSL",
+                .TCP => "TCP",
+                else => return DriverError.INVALID_ARGS,
+            };
+
+            if (self.busy_flag) return DriverError.BUSY;
+
             if (network_type == NetworkDriveType.CLIENT_ONLY) return DriverError.SERVER_OFF;
 
-            const end_bind = div_binds;
-
-            _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=1,{d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER)], port, postfix });
-            try self.event_aux_buffer.push(commands_enum.NETWORK_SERVER);
-            try self.TX_buffer.push(inner_buffer);
+            _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}=1,{d},\"{s}\"{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER)], port, net_type, postfix }) catch return DriverError.INVALID_ARGS;
+            self.event_aux_buffer.push(commands_enum.NETWORK_SERVER) catch return DriverError.TASK_BUFFER_FULL;
+            self.TX_buffer.push(inner_buffer) catch return DriverError.TX_BUFFER_FULL;
             for (0..end_bind) |id| {
                 self.Network_binds[id] = .{
                     .descriptor_id = @intCast(id),
@@ -663,14 +674,14 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             }
         }
 
-        pub fn delete_server(self: *Self) !void {
+        pub fn delete_server(self: *Self) DriverError!void {
             var inner_buffer: [50]u8 = .{0} ** 50;
             const end_bind = div_binds;
 
             //send close server command
-            _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=0,1{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER)], postfix });
-            try self.event_aux_buffer.push(commands_enum.NETWORK_SERVER);
-            try self.TX_buffer.push(inner_buffer);
+            _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}=0,1{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER)], postfix }) catch unreachable;
+            self.event_aux_buffer.push(commands_enum.NETWORK_SERVER) catch DriverError.TASK_BUFFER_FULL;
+            self.TX_buffer.push(inner_buffer) catch DriverError.TX_BUFFER_FULL;
 
             //clear all server binds
             for (0..end_bind) |id| {
@@ -680,7 +691,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             //clear all server pkgs
             const pool_size = self.Network_pool.get_data_size();
             for (0..pool_size) |_| {
-                const pkg = self.Network_pool.get() catch return;
+                const pkg = self.Network_pool.get() catch break;
                 if (pkg.descriptor_id < end_bind) {
                     if (pkg.data) |data| {
                         self.inner_alloc.free(data);
@@ -692,24 +703,27 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         //TODO: add error check
-        pub fn send(self: *Self, id: u8, data: []const u8) !void {
+        pub fn send(self: *Self, id: u8, data: []const u8) DriverError!void {
             if (self.busy_flag) return DriverError.BUSY;
             var inner_buffer: [50]u8 = .{0} ** 50;
 
-            if (id > self.Network_binds.len) return NetworkError.NULL_BIND;
-            const pkg_data = try self.inner_alloc.alloc(u8, data.len);
+            _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}={d},{d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SEND)], id, data.len, postfix }) catch return DriverError.INVALID_ARGS;
+            //Send return OK before data send and after data send (<- send OK)
+            self.event_aux_buffer.push(commands_enum.NETWORK_SEND) catch return DriverError.TASK_BUFFER_FULL;
+            self.event_aux_buffer.push(commands_enum.NETWORK_SEND_RESP) catch return DriverError.TASK_BUFFER_FULL;
+            self.TX_buffer.push(inner_buffer) catch return DriverError.TX_BUFFER_FULL;
+
+            if (id > self.Network_binds.len) return DriverError.INVALID_BIND;
+            const pkg_data = self.inner_alloc.alloc(u8, data.len) catch return DriverError.ALLOC_FAIL;
             @memcpy(pkg_data, data);
             const pkg = NetworkPackage{
                 .data = pkg_data,
                 .descriptor_id = id,
             };
-            try self.Network_pool.push(pkg);
-
-            _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}={d},{d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SEND)], id, data.len, postfix });
-            //Send return OK before data send and after data send (<- send OK)
-            try self.event_aux_buffer.push(commands_enum.NETWORK_SEND);
-            try self.event_aux_buffer.push(commands_enum.NETWORK_SEND_RESP);
-            try self.TX_buffer.push(inner_buffer);
+            self.Network_pool.push(pkg) catch {
+                self.inner_alloc.free(pkg.data.?);
+                return DriverError.NETWORK_BUFFER_FULL;
+            };
         }
 
         pub fn get_AP_ip(self: *Self) []u8 {

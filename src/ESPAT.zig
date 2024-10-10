@@ -3,7 +3,7 @@ pub const Circular_buffer = @import("util/circular_buffer.zig");
 
 //TODO: add more error types
 pub const NetworkError = error{ MAX_BINDS, ALLOC_ERROR, NULL_BIND, INVALID_TYPE };
-pub const DriverErros = error{
+pub const DriverError = error{
     WIFI_OFF,
     BUSY,
     AP_OFF,
@@ -12,7 +12,13 @@ pub const DriverErros = error{
     SERVER_OFF,
     CLIENT_DISABLE,
     CLIENT_DISCONNECTED,
-    BUFFER_FULL,
+    RX_BUFFER_FULL,
+    TX_BUFFER_FULL,
+    TASK_BUFFER_FULL,
+    AUX_BUFFER_EMPTY,
+    NETWORK_BUFFER_EMPTY,
+    INVALID_RESPONSE,
+    ALLOC_FAIL,
 };
 pub const NetworkDriveType = enum {
     SERVER_ONLY,
@@ -199,54 +205,56 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         on_cmd_response: ?*const fn (result: CommandResults, cmd: commands_enum) void = null,
         on_WiFi_respnse: ?*const fn (event: WifiEvent) void = null,
 
-        fn get_cmd_type(self: *Self, aux_buffer: []const u8) void {
+        fn get_cmd_type(self: *Self, aux_buffer: []const u8) DriverError!void {
             var result: ?usize = null;
             const cmd_len = COMMANDS_RESPOSES_TOKENS.len;
             for (0..cmd_len) |COMMAND| {
                 result = std.mem.indexOf(u8, aux_buffer, COMMANDS_RESPOSES_TOKENS[COMMAND]);
                 if (result) |_| {
-                    self.exec_cmd(COMMAND, aux_buffer);
+                    try self.exec_cmd(COMMAND, aux_buffer);
                 }
             }
         }
 
-        fn exec_cmd(self: *Self, cmd_id: usize, aux_buffer: []const u8) void {
+        fn exec_cmd(self: *Self, cmd_id: usize, aux_buffer: []const u8) DriverError!void {
             switch (cmd_id) {
-                0 => self.command_response(CommandResults.Ok),
-                1 => self.command_response(CommandResults.Error),
-                2 => self.wifi_response(aux_buffer),
+                0 => try self.command_response(CommandResults.Ok),
+                1 => try self.command_response(CommandResults.Error),
+                2 => try self.wifi_response(aux_buffer),
                 3 => self.network_event(NetworkHandlerState.Connected, aux_buffer),
                 4 => self.network_event(NetworkHandlerState.Closed, aux_buffer),
-                else => unreachable,
+                else => return DriverError.INVALID_RESPONSE,
             }
         }
 
         //TODO: remove external use of RX_aux_buffer, recive a slice insted
-        fn get_cmd_data_type(self: *Self, aux_buffer: []const u8) void {
+        fn get_cmd_data_type(self: *Self, aux_buffer: []const u8) DriverError!void {
             var result: ?usize = null;
             for (0..COMMAND_DATA_TYPES.len) |COMMAND| {
                 result = std.mem.indexOf(u8, aux_buffer, COMMAND_DATA_TYPES[COMMAND]);
                 if (result) |_| {
-                    self.read_cmd_data(COMMAND, aux_buffer);
+                    try self.read_cmd_data(COMMAND, aux_buffer);
                 }
             }
         }
 
         //TODO: ADD more responses
-        fn read_cmd_data(self: *Self, cmd_id: usize, aux_buffer: []const u8) void {
+        fn read_cmd_data(self: *Self, cmd_id: usize, aux_buffer: []const u8) DriverError!void {
             switch (cmd_id) {
-                0 => self.parse_network_data(aux_buffer),
-                1 => self.WiFi_get_AP_info(),
-                2 => self.WiFi_error(),
-                else => {},
+                0 => try self.parse_network_data(aux_buffer),
+                1 => try self.WiFi_get_AP_info(),
+                2 => try self.WiFi_error(),
+                else => {
+                    return DriverError.INVALID_RESPONSE;
+                },
             }
         }
-        fn command_response(self: *Self, state: CommandResults) void {
-            const cmd_result = self.event_aux_buffer.get() catch return;
+        fn command_response(self: *Self, state: CommandResults) DriverError!void {
+            const cmd_result = self.event_aux_buffer.get() catch return DriverError.AUX_BUFFER_EMPTY;
 
             //delete pkg if send fail
             if ((state == .Error) and (cmd_result == .NETWORK_SEND)) {
-                const to_delete = self.Network_pool.get() catch return;
+                const to_delete = self.Network_pool.get() catch return DriverError.NETWORK_BUFFER_EMPTY;
                 if (to_delete.data) |data| {
                     self.inner_alloc.free(data);
                 }
@@ -257,9 +265,9 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         //TODO: add error check on invalid input
-        fn wifi_response(self: *Self, aux_buffer: []const u8) void {
+        fn wifi_response(self: *Self, aux_buffer: []const u8) DriverError!void {
             self.busy_flag = false;
-            var inner_buffer: [50]u8 = std.mem.zeroes([50]u8);
+            var inner_buffer: [50]u8 = .{0} ** 50;
             var index: usize = 0;
             var result: ?usize = null;
             var tx_event: ?WifiEvent = null;
@@ -276,8 +284,8 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 2 => {
                     tx_event = WifiEvent.WiFi_CONNECTED;
                     _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}?{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_IP)], postfix }) catch return;
-                    self.TX_buffer.push(inner_buffer) catch return;
-                    self.event_aux_buffer.push(commands_enum.NETWORK_IP) catch return;
+                    self.TX_buffer.push(inner_buffer) catch return DriverError.TX_BUFFER_FULL;
+                    self.event_aux_buffer.push(commands_enum.NETWORK_IP) catch return DriverError.TASK_BUFFER_FULL;
                 },
                 else => {
                     return;
@@ -291,7 +299,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         //ADD more WiFi events
-        fn WiFi_get_AP_info(self: *Self) void {
+        fn WiFi_get_AP_info(self: *Self) DriverError!void {
             var data: u8 = 0;
             var aux_buffer: Circular_buffer.create_buffer(u8, 50) = .{};
             while (data != '\n') {
@@ -299,7 +307,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                     self.RX_callback_handler(&self.RX_buffer);
                     continue;
                 };
-                aux_buffer.push(data) catch return;
+                aux_buffer.push(data) catch return DriverError.TASK_BUFFER_FULL;
             }
             const inner_buffer = aux_buffer.raw_buffer();
             const nettype = inner_buffer[0];
@@ -309,7 +317,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 'g' => &self.network_AP_gateway,
                 'n' => &self.network_AP_mask,
                 else => {
-                    return;
+                    return DriverError.INVALID_RESPONSE;
                 },
             };
             const data_start_index = std.mem.indexOf(u8, inner_buffer, ":");
@@ -327,15 +335,16 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                         }
                     }
                 }
+            } else {
+                return DriverError.INVALID_RESPONSE;
             }
         }
 
-        fn WiFi_error(self: *Self) void {
+        fn WiFi_error(self: *Self) DriverError!void {
             if (self.busy_flag) self.busy_flag = false;
             if (self.on_WiFi_respnse) |callback| {
                 const error_id: u8 = self.RX_buffer.get() catch {
-                    callback(WifiEvent.WiFi_ERROR_UNKNOWN);
-                    return;
+                    return DriverError.INVALID_RESPONSE;
                 };
                 switch (error_id) {
                     '1' => callback(WifiEvent.WiFi_ERROR_TIMEOUT),
@@ -348,12 +357,12 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         //TODO: add error check on invalid input
-        fn parse_network_data(self: *Self, aux_buffer: []const u8) void {
+        fn parse_network_data(self: *Self, aux_buffer: []const u8) DriverError!void {
             var slices = std.mem.split(u8, aux_buffer, ",");
             _ = slices.next();
 
             //TODO: add error checking
-            const id = std.fmt.parseInt(usize, slices.next().?, 10) catch return;
+            const id = std.fmt.parseInt(usize, slices.next().?, 10) catch return DriverError.INVALID_RESPONSE;
             const temp_slice = slices.next().?;
             var end_index: usize = 0;
             for (temp_slice) |ch| {
@@ -362,16 +371,16 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 }
             }
 
-            const remain_data = std.fmt.parseInt(usize, temp_slice[0..end_index], 10) catch return;
-            self.read_network_data(id, remain_data);
+            const remain_data = std.fmt.parseInt(usize, temp_slice[0..end_index], 10) catch return DriverError.INVALID_RESPONSE;
+            try self.read_network_data(id, remain_data);
         }
 
         //TODO: add timeout
-        fn read_network_data(self: *Self, id: usize, to_recive: usize) void {
+        fn read_network_data(self: *Self, id: usize, to_recive: usize) DriverError!void {
             var remain = to_recive;
             var index: usize = 0;
             var data: u8 = 0;
-            var rev = self.inner_alloc.alloc(u8, to_recive) catch return;
+            var rev = self.inner_alloc.alloc(u8, to_recive) catch return DriverError.ALLOC_FAIL;
             defer self.inner_alloc.free(rev);
             while (remain > 0) {
                 data = self.RX_buffer.get() catch {
@@ -421,8 +430,8 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             }
         }
 
-        fn network_send_data(self: *Self) void {
-            const pkg = self.Network_pool.get() catch return;
+        fn network_send_data(self: *Self) DriverError!void {
+            const pkg = self.Network_pool.get() catch return DriverError.NETWORK_BUFFER_EMPTY;
             const id = pkg.descriptor_id;
             if (pkg.data) |data| {
                 self.TX_callback_handler(data);
@@ -445,7 +454,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         //TODO: block TX on Busy
         //TODO: ADD MORE AT commands
         //TODO: Fix deadlock on WiFi connect error
-        pub fn process(self: *Self) void {
+        pub fn process(self: *Self) DriverError!void {
             self.RX_callback_handler(&self.RX_buffer);
 
             switch (self.machine_state) {
@@ -461,13 +470,13 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                     self.machine_state = Drive_states.IDLE;
                 },
                 .IDLE => {
-                    self.IDLE_REV();
+                    try self.IDLE_REV();
                     self.IDLE_TRANS();
                 },
             }
         }
 
-        fn IDLE_REV(self: *Self) void {
+        fn IDLE_REV(self: *Self) DriverError!void {
             var data: u8 = 0;
             var RX_aux_buffer: Circular_buffer.create_buffer(u8, 50) = .{};
             while (true) {
@@ -475,18 +484,18 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 switch (data) {
                     '\n' => {
                         if (RX_aux_buffer.get_data_size() >= 3) {
-                            self.get_cmd_type(RX_aux_buffer.raw_buffer());
+                            try self.get_cmd_type(RX_aux_buffer.raw_buffer());
                         }
                         RX_aux_buffer.clear();
                         return;
                     },
                     ':' => {
-                        self.get_cmd_data_type(RX_aux_buffer.raw_buffer());
+                        try self.get_cmd_data_type(RX_aux_buffer.raw_buffer());
                         RX_aux_buffer.clear();
                         return;
                     },
                     '>' => {
-                        self.network_send_data();
+                        try self.network_send_data();
                         RX_aux_buffer.clear();
                         return;
                     },
@@ -560,11 +569,11 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         //TODO: ADD error check in WiFi name and password
         //TODO: add optinal args
         pub fn WiFi_connect_AP(self: *Self, ssid: []const u8, password: []const u8) !void {
-            if (self.busy_flag) return DriverErros.BUSY;
+            if (self.busy_flag) return DriverError.BUSY;
             if (Wifi_type == WiFiDriverType.AP) {
-                return DriverErros.STA_OFF;
+                return DriverError.STA_OFF;
             } else if (Wifi_type == WiFiDriverType.NONE) {
-                return DriverErros.WIFI_OFF;
+                return DriverError.WIFI_OFF;
             }
             self.WiFi_AP_SSID = ssid;
             self.WiFi_AP_PASSWORD = password;
@@ -573,11 +582,11 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         //TODO: ADD error check in WiFi name and password
         //TODO: add optinal args
         pub fn WiFi_config_AP(self: *Self, ssid: []const u8, password: []const u8, channel: u8, ecn: WiFi_encryption) !void {
-            if (self.busy_flag) return DriverErros.BUSY;
+            if (self.busy_flag) return DriverError.BUSY;
             if (Wifi_type == WiFiDriverType.STA) {
-                return DriverErros.AP_OFF;
+                return DriverError.AP_OFF;
             } else if (Wifi_type == WiFiDriverType.NONE) {
-                return DriverErros.WIFI_OFF;
+                return DriverError.WIFI_OFF;
             }
             var inner_buffer: [50]u8 = .{0} ** 50;
             _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=\"{s}\",\"{s}\",{d},{d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_CONF)], ssid, password, channel, @intFromEnum(ecn), postfix });
@@ -607,7 +616,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         //TODO: ADD IPv6
         pub fn connect(self: *Self, id: u8, host: []const u8, port: u16) !void {
-            if (self.busy_flag) return DriverErros.BUSY;
+            if (self.busy_flag) return DriverError.BUSY;
             if (id > self.Network_binds.len) return NetworkError.NULL_BIND;
             var inner_buffer: [50]u8 = .{0} ** 50;
             if (self.Network_binds[id]) |bd| {
@@ -636,9 +645,9 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         //TODO: add server type param (TCP, TCP6, SSL, SSL6)
         pub fn create_server(self: *Self, port: u16, event_callback: *const fn (client: Client) void) !void {
-            if (self.busy_flag) return DriverErros.BUSY;
+            if (self.busy_flag) return DriverError.BUSY;
             var inner_buffer: [50]u8 = .{0} ** 50;
-            if (network_type == NetworkDriveType.CLIENT_ONLY) return DriverErros.SERVER_OFF;
+            if (network_type == NetworkDriveType.CLIENT_ONLY) return DriverError.SERVER_OFF;
 
             const end_bind = div_binds;
 
@@ -684,7 +693,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         //TODO: add error check
         pub fn send(self: *Self, id: u8, data: []const u8) !void {
-            if (self.busy_flag) return DriverErros.BUSY;
+            if (self.busy_flag) return DriverError.BUSY;
             var inner_buffer: [50]u8 = .{0} ** 50;
 
             if (id > self.Network_binds.len) return NetworkError.NULL_BIND;

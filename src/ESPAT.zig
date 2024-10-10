@@ -119,6 +119,7 @@ pub const WifiEvent = enum(u8) {
     WiFi_ERROR_UNKNOWN,
 };
 
+//TODO: add more events
 pub const NetworkEvent = enum {
     Connected,
     Closed,
@@ -140,7 +141,13 @@ pub const NetworkHandlerType = enum {
 
 //TODO: add more config
 //TODO: add Restart driver
-//TODO: add eneble_IPv6 func
+//TODO: change busy interface
+//TODO: apply busy on "CIPSEND"
+//TODO: change "command_response(error)" to internal error handler with stacktrace
+//TODO: enbale full suport for SSL (at the moment it is not possible to configure SSL certificates)
+//TODO: add eneble_IPv6 func [maybe]
+//TODO: add bluetooth LE suport for ESP32 modules [maybe]
+//TODO: add suport for optional AT frimware features [maybe]
 pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: comptime_int, comptime Wifi_type: WiFiDriverType, comptime network_type: NetworkDriveType) type {
     if (RX_SIZE <= 50) @compileError("RX SIZE CANNOT BE LESS THAN 50 byte");
     if (network_pool_size <= 5) @compileError(" NETWORK POOL SIZE CANNOT BE LESS THAN 5 events");
@@ -154,6 +161,8 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         // data types
         const Self = @This();
         const div_binds = max_binds;
+
+        //TODO: add more functions
         pub const Client = struct {
             id: u8,
             driver: *Self,
@@ -703,6 +712,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         //TODO: add error check
+        //TODO: break data bigger than 2048 into multi 2048 pkgs
         pub fn send(self: *Self, id: u8, data: []const u8) DriverError!void {
             if (self.busy_flag) return DriverError.BUSY;
             var inner_buffer: [50]u8 = .{0} ** 50;

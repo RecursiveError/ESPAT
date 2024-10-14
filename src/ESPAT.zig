@@ -234,12 +234,13 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             for (0..cmd_len) |COMMAND| {
                 result = std.mem.indexOf(u8, aux_buffer, COMMANDS_RESPOSES_TOKENS[COMMAND]);
                 if (result) |_| {
-                    try self.exec_cmd(COMMAND, aux_buffer);
+                    try self.read_cmd_response(COMMAND, aux_buffer);
                 }
             }
         }
 
-        fn exec_cmd(self: *Self, cmd_id: usize, aux_buffer: []const u8) DriverError!void {
+        fn read_cmd_response(self: *Self, cmd_id: usize, aux_buffer: []const u8) DriverError!void {
+            //TODO: change this
             switch (cmd_id) {
                 0 => try self.command_response(CommandResults.Ok),
                 1 => try self.command_response(CommandResults.Error),
@@ -249,8 +250,6 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 else => return DriverError.INVALID_RESPONSE,
             }
         }
-
-        //TODO: remove external use of RX_aux_buffer, recive a slice insted
         fn get_cmd_data_type(self: *Self, aux_buffer: []const u8) DriverError!void {
             var result: ?usize = null;
             for (0..COMMAND_DATA_TYPES.len) |COMMAND| {
@@ -287,7 +286,6 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             }
         }
 
-        //TODO: add error check on invalid input
         fn wifi_response(self: *Self, aux_buffer: []const u8) DriverError!void {
             self.busy_flag = false;
             var inner_buffer: [50]u8 = .{0} ** 50;
@@ -368,7 +366,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         fn WiFi_error(self: *Self) DriverError!void {
-            if (self.busy_flag) self.busy_flag = false;
+            self.busy_flag = false;
             if (self.on_WiFi_respnse) |callback| {
                 const error_id: u8 = self.RX_buffer.get() catch {
                     return DriverError.INVALID_RESPONSE;
@@ -383,22 +381,29 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             }
         }
 
-        //TODO: add error check on invalid input
         fn parse_network_data(self: *Self, aux_buffer: []const u8) DriverError!void {
             var slices = std.mem.split(u8, aux_buffer, ",");
             _ = slices.next();
+            var id: usize = 0;
+            var remain_data: usize = 0;
 
-            //TODO: add error checking
-            const id = std.fmt.parseInt(usize, slices.next().?, 10) catch return DriverError.INVALID_RESPONSE;
-            const temp_slice = slices.next().?;
-            var end_index: usize = 0;
-            for (temp_slice) |ch| {
-                if ((ch >= '0') and ch <= '9') {
-                    end_index += 1;
-                }
+            if (slices.next()) |recive_id| {
+                id = std.fmt.parseInt(usize, recive_id, 10) catch return DriverError.INVALID_RESPONSE;
+            } else {
+                return DriverError.INVALID_RESPONSE;
             }
+            if (slices.next()) |data_size| {
+                var end_index: usize = 0;
+                for (data_size) |ch| {
+                    if ((ch >= '0') and ch <= '9') {
+                        end_index += 1;
+                    }
+                }
 
-            const remain_data = std.fmt.parseInt(usize, temp_slice[0..end_index], 10) catch return DriverError.INVALID_RESPONSE;
+                remain_data = std.fmt.parseInt(usize, data_size[0..end_index], 10) catch return DriverError.INVALID_RESPONSE;
+            } else {
+                return DriverError.INVALID_RESPONSE;
+            }
             try self.read_network_data(id, remain_data);
         }
 

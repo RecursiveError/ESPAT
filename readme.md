@@ -8,7 +8,6 @@ __Minimum AT Firmware Version__: 2.2.0.0
 **Warning**: for Ai-thinker modules such as ESP-01 or ESP-12E with Boantong AT firmware it is still possible to use the modes: client only and server only, but be aware that some boards do not provide CTS and RTS pins for UART interface, so you are responsible for ensuring that no data is lost
 
 ## Supported Features
-- [ ] UART Config
 - [ ] SSL config
 - [x] STA WiFi mode
 - [X] AP WiFi mode
@@ -18,6 +17,10 @@ __Minimum AT Firmware Version__: 2.2.0.0
 - [x] TCP Server
 - [ ] SSL Server
 - [x] Server + Client
+
+## Others
+Features that may be implemented
+- [ ] UART Config  
 - [ ] Build-in HTTP client
 - [ ] Build-in MQTT client
 - [ ] user Commands 

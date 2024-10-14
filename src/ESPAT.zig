@@ -152,8 +152,6 @@ pub const TXEventPkg = struct {
 
 //TODO: add more config
 //TODO: add Restart driver
-//TODO: change busy interface
-//TODO: apply busy on "CIPSEND"
 //TODO: change "command_response(error)" to internal error handler with stacktrace
 //TODO: enbale full suport for SSL (at the moment it is not possible to configure SSL certificates)
 //TODO: add eneble_IPv6 func [maybe]

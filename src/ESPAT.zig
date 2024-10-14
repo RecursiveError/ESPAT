@@ -139,6 +139,17 @@ pub const NetworkHandlerType = enum {
     SSL,
 };
 
+pub const WiFistate = enum {
+    OFF,
+    DISCONECTED,
+    CONNECTED,
+};
+
+pub const TXEventPkg = struct {
+    busy: bool = false,
+    cmd_data: [50]u8,
+};
+
 //TODO: add more config
 //TODO: add Restart driver
 //TODO: change busy interface
@@ -195,7 +206,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         //internal alloc
         inner_alloc: std.mem.Allocator = undefined,
         //internal control data, (Do not modify)
-        TX_buffer: Circular_buffer.create_buffer([50]u8, 25) = .{},
+        TX_buffer: Circular_buffer.create_buffer(TXEventPkg, 25) = .{},
         RX_buffer: buffer_type = .{},
         TX_callback_handler: TX_callback,
         RX_callback_handler: RX_callback,
@@ -205,6 +216,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         WiFi_AP_SSID: ?[]const u8 = null,
         WiFi_AP_PASSWORD: ?[]const u8 = null,
+        Wifi_state: WiFistate = .OFF,
 
         //network data
         Network_binds: [5]?network_handler = .{ null, null, null, null, null },
@@ -292,12 +304,15 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 index += 1;
             }
             switch (index) {
-                0 => tx_event = WifiEvent.WiFi_DISCONNECTED,
+                0 => {
+                    tx_event = WifiEvent.WiFi_DISCONNECTED;
+                    self.Wifi_state = .DISCONECTED;
+                },
                 1 => tx_event = WifiEvent.WiFi_CON_START,
                 2 => {
                     tx_event = WifiEvent.WiFi_CONNECTED;
                     _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}?{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_IP)], postfix }) catch return;
-                    self.TX_buffer.push(inner_buffer) catch return DriverError.TX_BUFFER_FULL;
+                    self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer }) catch return DriverError.TX_BUFFER_FULL;
                     self.event_aux_buffer.push(commands_enum.NETWORK_IP) catch return DriverError.TASK_BUFFER_FULL;
                 },
                 else => {
@@ -342,6 +357,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                     if (net_data.len < out_pointer.len) {
                         std.mem.copyForwards(u8, out_pointer, net_data);
                         if (ip_flag) {
+                            self.Wifi_state = .CONNECTED;
                             if (self.on_WiFi_respnse) |callback| {
                                 callback(WifiEvent.WiFi_GOT_IP);
                             }
@@ -461,6 +477,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                     }
                 }
             }
+            self.busy_flag = false;
         }
 
         //TODO: ADD error returns
@@ -518,42 +535,51 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         fn IDLE_TRANS(self: *Self) void {
+            if (self.busy_flag) {
+                _ = std.log.info("TX busy, waiting tasks: {}", .{self.TX_buffer.get_data_size()});
+                return;
+            }
             const next_cmd = self.TX_buffer.get() catch return;
-            self.TX_callback_handler(&next_cmd);
+            self.busy_flag = next_cmd.busy;
+            self.TX_callback_handler(&next_cmd.cmd_data);
         }
 
+        //TODO; make a event pool just to init commands
         fn init_driver(self: *Self) !void {
             var inner_buffer: [50]u8 = std.mem.zeroes([50]u8);
-            //clear buffers
-            self.TX_buffer.clear();
-            self.RX_buffer.clear();
-            self.event_aux_buffer.clear();
+            const pre_cmds = self.TX_buffer.get_data_size();
 
             //desable ECHO
             _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}", .{ COMMANDS_TOKENS[@intFromEnum(commands_enum.ECHO_OFF)], postfix });
-            try self.TX_buffer.push(inner_buffer);
+            try self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer });
             try self.event_aux_buffer.push(commands_enum.ECHO_OFF);
 
             //enable multi-conn
             _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=1{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.IP_MUX)], postfix });
-            try self.TX_buffer.push(inner_buffer);
+            try self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer });
             try self.event_aux_buffer.push(commands_enum.IP_MUX);
 
             //set WiFi to STA and AP
             _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}={d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_SET_MODE)], @intFromEnum(Wifi_mode), postfix });
-            try self.TX_buffer.push(inner_buffer);
+            try self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer });
             try self.event_aux_buffer.push(commands_enum.WIFI_SET_MODE);
 
             //disable wifi auto connection
             _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=0{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_AUTOCONN)], postfix });
-            try self.TX_buffer.push(inner_buffer);
+            try self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer });
             try self.event_aux_buffer.push(commands_enum.WIFI_AUTOCONN);
 
             if (network_type == NetworkDriveType.SERVER_CLIENT) {
                 //configure server to MAX connections to 3
                 _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=3{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER_CONF)], postfix });
-                try self.TX_buffer.push(inner_buffer);
+                try self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer });
                 try self.event_aux_buffer.push(commands_enum.NETWORK_SERVER_CONF);
+            }
+
+            //PUSH any extra cmd to end, init CMD shuld be exec first
+            for (0..pre_cmds) |_| {
+                const pkg = try self.TX_buffer.get();
+                try self.TX_buffer.push(pkg);
             }
         }
 
@@ -574,8 +600,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 var inner_buffer: [50]u8 = .{0} ** 50;
                 _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}=\"{s}\",\"{s}\"{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_CONNECT)], ssid, password, postfix }) catch return;
                 self.event_aux_buffer.push(commands_enum.WIFI_CONNECT) catch return;
-                self.TX_buffer.push(inner_buffer) catch return;
-                self.busy_flag = true;
+                self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer, .busy = true }) catch return;
             }
         }
 
@@ -604,7 +629,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             var inner_buffer: [50]u8 = .{0} ** 50;
             _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=\"{s}\",\"{s}\",{d},{d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_CONF)], ssid, password, channel, @intFromEnum(ecn), postfix });
             try self.event_aux_buffer.push(commands_enum.WIFI_CONF);
-            try self.TX_buffer.push(inner_buffer);
+            try self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer });
         }
 
         pub fn bind(self: *Self, net_type: NetworkHandlerType, event_callback: *const fn (client: Client) void) DriverError!u8 {
@@ -643,7 +668,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 };
                 _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}={d},\"{s}\",\"{s}\",{d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_CONNECT)], id, net_type, host, port, postfix }) catch return DriverError.INVALID_ARGS;
                 self.event_aux_buffer.push(commands_enum.NETWORK_CONNECT) catch return DriverError.TASK_BUFFER_FULL;
-                self.TX_buffer.push(inner_buffer) catch return DriverError.TX_BUFFER_FULL;
+                self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer }) catch return DriverError.TX_BUFFER_FULL;
             } else {
                 return DriverError.INVALID_BIND;
             }
@@ -653,7 +678,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             var inner_buffer: [50]u8 = .{0} ** 50;
             _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}={d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_CLOSE)], id, postfix }) catch return DriverError.INVALID_ARGS;
             self.event_aux_buffer.push(commands_enum.NETWORK_CLOSE) catch return DriverError.TASK_BUFFER_FULL;
-            self.TX_buffer.push(inner_buffer) catch return DriverError.TX_BUFFER_FULL;
+            self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer }) catch return DriverError.TX_BUFFER_FULL;
         }
 
         //TODO: add server type param (TCP, TCP6, SSL, SSL6)
@@ -673,7 +698,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
             _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}=1,{d},\"{s}\"{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER)], port, net_type, postfix }) catch return DriverError.INVALID_ARGS;
             self.event_aux_buffer.push(commands_enum.NETWORK_SERVER) catch return DriverError.TASK_BUFFER_FULL;
-            self.TX_buffer.push(inner_buffer) catch return DriverError.TX_BUFFER_FULL;
+            self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer }) catch return DriverError.TX_BUFFER_FULL;
             for (0..end_bind) |id| {
                 self.Network_binds[id] = .{
                     .descriptor_id = @intCast(id),
@@ -690,7 +715,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             //send close server command
             _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}=0,1{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER)], postfix }) catch unreachable;
             self.event_aux_buffer.push(commands_enum.NETWORK_SERVER) catch DriverError.TASK_BUFFER_FULL;
-            self.TX_buffer.push(inner_buffer) catch DriverError.TX_BUFFER_FULL;
+            self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer }) catch DriverError.TX_BUFFER_FULL;
 
             //clear all server binds
             for (0..end_bind) |id| {
@@ -713,6 +738,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         //TODO: add error check
         //TODO: break data bigger than 2048 into multi 2048 pkgs
+        //TODO: delete events from pool in case of erros
         pub fn send(self: *Self, id: u8, data: []const u8) DriverError!void {
             if (self.busy_flag) return DriverError.BUSY;
             var inner_buffer: [50]u8 = .{0} ** 50;
@@ -721,7 +747,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             //Send return OK before data send and after data send (<- send OK)
             self.event_aux_buffer.push(commands_enum.NETWORK_SEND) catch return DriverError.TASK_BUFFER_FULL;
             self.event_aux_buffer.push(commands_enum.NETWORK_SEND_RESP) catch return DriverError.TASK_BUFFER_FULL;
-            self.TX_buffer.push(inner_buffer) catch return DriverError.TX_BUFFER_FULL;
+            self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer, .busy = true }) catch return DriverError.TX_BUFFER_FULL;
 
             if (id > self.Network_binds.len) return DriverError.INVALID_BIND;
             const pkg_data = self.inner_alloc.alloc(u8, data.len) catch return DriverError.ALLOC_FAIL;

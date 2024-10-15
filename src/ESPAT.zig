@@ -34,9 +34,7 @@ pub const WiFiDriverType = enum { NONE, STA, AP, AP_STA };
 
 //TODO: add uart config
 pub const Drive_states = enum {
-    reset,
     init,
-    WiFiinit,
     IDLE,
 };
 
@@ -214,7 +212,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         TX_callback_handler: TX_callback,
         RX_callback_handler: RX_callback,
         event_aux_buffer: Circular_buffer.create_buffer(commands_enum, 25) = .{},
-        machine_state: Drive_states = .reset,
+        machine_state: Drive_states = .init,
         busy_flag: bool = false,
 
         WiFi_AP_SSID: ?[]const u8 = null,
@@ -239,8 +237,13 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             const cmd_len = COMMANDS_RESPOSES_TOKENS.len;
             for (0..cmd_len) |COMMAND| {
                 result = std.mem.indexOf(u8, aux_buffer, COMMANDS_RESPOSES_TOKENS[COMMAND]);
-                if (result) |_| {
-                    try self.read_cmd_response(COMMAND, aux_buffer);
+                if (result) |r| {
+                    self.read_cmd_response(COMMAND, aux_buffer) catch |err| {
+                        _ = std.log.info("read cnd data fail {}", .{err});
+                        _ = std.log.info("data recive {s}, data found {}", .{ aux_buffer, r });
+                        return err;
+                    };
+                    break;
                 }
             }
         }
@@ -263,6 +266,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 result = std.mem.indexOf(u8, aux_buffer, COMMAND_DATA_TYPES[COMMAND]);
                 if (result) |_| {
                     try self.read_cmd_data(COMMAND, aux_buffer);
+                    break;
                 }
             }
         }
@@ -294,7 +298,6 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         fn wifi_response(self: *Self, aux_buffer: []const u8) DriverError!void {
-            self.busy_flag = false;
             var inner_buffer: [50]u8 = .{0} ** 50;
             var index: usize = 0;
             var result: ?usize = null;
@@ -313,13 +316,14 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 },
                 1 => tx_event = WifiEvent.WiFi_CON_START,
                 2 => {
+                    self.busy_flag = false;
                     tx_event = WifiEvent.WiFi_CONNECTED;
                     _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}?{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_IP)], postfix }) catch return;
                     self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer }) catch return DriverError.TX_BUFFER_FULL;
                     self.event_aux_buffer.push(commands_enum.NETWORK_IP) catch return DriverError.TASK_BUFFER_FULL;
                 },
                 else => {
-                    return;
+                    return DriverError.INVALID_RESPONSE;
                 },
             }
             if (tx_event) |event| {
@@ -501,19 +505,8 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         //TODO: Fix deadlock on WiFi connect error
         pub fn process(self: *Self) DriverError!void {
             switch (self.machine_state) {
-                .reset => {
-                    self.reset();
-                },
                 .init => {
                     self.init_driver() catch return;
-                    self.machine_state = Drive_states.WiFiinit;
-                },
-                .WiFiinit => {
-                    if (Wifi_type != WiFiDriverType.AP) {
-                        self.innerWiFi_connect();
-                    }
-                    //go to IDLE mode
-                    self.machine_state = Drive_states.IDLE;
                 },
                 .IDLE => {
                     try self.IDLE_REV();
@@ -562,9 +555,21 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         //TODO; make a event pool just to init commands
-        fn init_driver(self: *Self) !void {
+        pub fn init_driver(self: *Self) !void {
+            //clear buffers
+            self.deinit_driver();
+            self.RX_buffer.clear();
+            self.TX_buffer.clear();
+            self.event_aux_buffer.clear();
             var inner_buffer: [50]u8 = std.mem.zeroes([50]u8);
-            const pre_cmds = self.TX_buffer.get_data_size();
+
+            //send RST request
+            _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.RESET)], postfix }) catch return DriverError.INVALID_ARGS;
+            self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer, .busy = true }) catch return DriverError.TX_BUFFER_FULL;
+            self.event_aux_buffer.push(commands_enum.RESET) catch return DriverError.TASK_BUFFER_FULL;
+
+            //clear aux buffer
+            inner_buffer = std.mem.zeroes([50]u8);
 
             //desable ECHO
             _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}", .{ COMMANDS_TOKENS[@intFromEnum(commands_enum.ECHO_OFF)], postfix });
@@ -592,12 +597,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 try self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer });
                 try self.event_aux_buffer.push(commands_enum.NETWORK_SERVER_CONF);
             }
-
-            //PUSH any extra cmd to end, init CMD shuld be exec first
-            for (0..pre_cmds) |_| {
-                const pkg = try self.TX_buffer.get();
-                try self.TX_buffer.push(pkg);
-            }
+            self.machine_state = Drive_states.IDLE;
         }
 
         pub fn deinit_driver(self: *Self) void {
@@ -609,33 +609,8 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             }
         }
 
-        pub fn reset(self: *Self) void {
-            var inner_buffer: [50]u8 = std.mem.zeroes([50]u8);
-
-            //clear buffers
-            self.deinit_driver();
-            self.RX_buffer.clear();
-            self.TX_buffer.clear();
-            self.event_aux_buffer.clear();
-
-            //send RST request
-            _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=3{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.RESET)], postfix });
-            try self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer, .busy = true });
-            try self.event_aux_buffer.push(commands_enum.RESET);
-            //back to init state
+        pub fn reset(self: *Self) DriverError!void {
             self.machine_state = .init;
-        }
-        fn innerWiFi_connect(self: *Self) void {
-            if (self.WiFi_AP_SSID) |ssid| {
-                var password: []const u8 = "\"\"";
-                if (self.WiFi_AP_PASSWORD) |pass| {
-                    password = pass;
-                }
-                var inner_buffer: [50]u8 = .{0} ** 50;
-                _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}=\"{s}\",\"{s}\"{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_CONNECT)], ssid, password, postfix }) catch return;
-                self.event_aux_buffer.push(commands_enum.WIFI_CONNECT) catch return;
-                self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer, .busy = true }) catch return;
-            }
         }
 
         //TODO: ADD error check in WiFi name and password
@@ -647,8 +622,10 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             } else if (Wifi_type == WiFiDriverType.NONE) {
                 return DriverError.WIFI_OFF;
             }
-            self.WiFi_AP_SSID = ssid;
-            self.WiFi_AP_PASSWORD = password;
+            var inner_buffer: [50]u8 = .{0} ** 50;
+            _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}=\"{s}\",\"{s}\"{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_CONNECT)], ssid, password, postfix }) catch return;
+            self.event_aux_buffer.push(commands_enum.WIFI_CONNECT) catch return;
+            self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer, .busy = true }) catch return;
         }
 
         //TODO: ADD error check in WiFi name and password

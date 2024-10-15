@@ -214,9 +214,6 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         event_aux_buffer: Circular_buffer.create_buffer(commands_enum, 25) = .{},
         machine_state: Drive_states = .init,
         busy_flag: bool = false,
-
-        WiFi_AP_SSID: ?[]const u8 = null,
-        WiFi_AP_PASSWORD: ?[]const u8 = null,
         Wifi_state: WiFistate = .OFF,
 
         //network data
@@ -613,30 +610,31 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             self.machine_state = .init;
         }
 
-        //TODO: ADD error check in WiFi name and password
-        //TODO: add optinal args
-        pub fn WiFi_connect_AP(self: *Self, ssid: []const u8, password: []const u8) !void {
-            if (self.busy_flag) return DriverError.BUSY;
+        //TODO: add more config
+        pub fn WiFi_connect_AP(self: *Self, ssid: []const u8, password: []const u8) DriverError!void {
             if (Wifi_type == WiFiDriverType.AP) {
                 return DriverError.STA_OFF;
             } else if (Wifi_type == WiFiDriverType.NONE) {
                 return DriverError.WIFI_OFF;
             }
+            const pwd_len = password.len;
+            if ((pwd_len > 0) and (pwd_len < 5)) return DriverError.INVALID_ARGS;
+
             var inner_buffer: [50]u8 = .{0} ** 50;
             _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}=\"{s}\",\"{s}\"{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_CONNECT)], ssid, password, postfix }) catch return;
             self.event_aux_buffer.push(commands_enum.WIFI_CONNECT) catch return;
             self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer, .busy = true }) catch return;
         }
 
-        //TODO: ADD error check in WiFi name and password
         //TODO: add optinal args
         pub fn WiFi_config_AP(self: *Self, ssid: []const u8, password: []const u8, channel: u8, ecn: WiFi_encryption) !void {
-            if (self.busy_flag) return DriverError.BUSY;
             if (Wifi_type == WiFiDriverType.STA) {
                 return DriverError.AP_OFF;
             } else if (Wifi_type == WiFiDriverType.NONE) {
                 return DriverError.WIFI_OFF;
             }
+            if (ssid.len == 0) return DriverError.INVALID_ARGS;
+            if ((ecn != .OPEN) and (password.len < 8)) return DriverError.INVALID_ARGS;
             var inner_buffer: [50]u8 = .{0} ** 50;
             _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=\"{s}\",\"{s}\",{d},{d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_CONF)], ssid, password, channel, @intFromEnum(ecn), postfix });
             try self.event_aux_buffer.push(commands_enum.WIFI_CONF);

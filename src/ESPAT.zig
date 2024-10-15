@@ -32,7 +32,9 @@ pub const NetworkDriveType = enum {
 
 pub const WiFiDriverType = enum { NONE, STA, AP, AP_STA };
 
+//TODO: add uart config
 pub const Drive_states = enum {
+    reset,
     init,
     WiFiinit,
     IDLE,
@@ -46,6 +48,7 @@ pub const WiFi_encryption = enum {
 };
 
 pub const commands_enum = enum(u8) {
+    RESET,
     ECHO_OFF,
     ECHO_ON,
     IP_MUX,
@@ -66,6 +69,7 @@ pub const commands_enum = enum(u8) {
 
 //This is not necessary since the user cannot send commands directly
 pub const COMMANDS_TOKENS = [_][]const u8{
+    "RST",
     "ATE0",
     "ATE1",
     "CIPMUX",
@@ -92,6 +96,7 @@ pub const COMMANDS_RESPOSES_TOKENS = [_][]const u8{
     "WIFI",
     "CON",
     "CLO",
+    "ready",
 };
 pub const COMMAND_DATA_TYPES = [_][]const u8{
     "IPD",
@@ -208,8 +213,8 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         RX_buffer: buffer_type = .{},
         TX_callback_handler: TX_callback,
         RX_callback_handler: RX_callback,
-        machine_state: Drive_states = .init,
-        event_aux_buffer: Circular_buffer.create_buffer(commands_enum, 10) = .{},
+        event_aux_buffer: Circular_buffer.create_buffer(commands_enum, 25) = .{},
+        machine_state: Drive_states = .reset,
         busy_flag: bool = false,
 
         WiFi_AP_SSID: ?[]const u8 = null,
@@ -228,6 +233,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         on_cmd_response: ?*const fn (result: CommandResults, cmd: commands_enum) void = null,
         on_WiFi_respnse: ?*const fn (event: WifiEvent) void = null,
 
+        //TODO: parse commands and use HASH to compare
         fn get_cmd_type(self: *Self, aux_buffer: []const u8) DriverError!void {
             var result: ?usize = null;
             const cmd_len = COMMANDS_RESPOSES_TOKENS.len;
@@ -245,8 +251,9 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 0 => try self.command_response(CommandResults.Ok),
                 1 => try self.command_response(CommandResults.Error),
                 2 => try self.wifi_response(aux_buffer),
-                3 => self.network_event(NetworkHandlerState.Connected, aux_buffer),
-                4 => self.network_event(NetworkHandlerState.Closed, aux_buffer),
+                3 => try self.network_event(NetworkHandlerState.Connected, aux_buffer),
+                4 => try self.network_event(NetworkHandlerState.Closed, aux_buffer),
+                5 => self.busy_flag = false,
                 else => return DriverError.INVALID_RESPONSE,
             }
         }
@@ -392,6 +399,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             } else {
                 return DriverError.INVALID_RESPONSE;
             }
+            if (id > self.Network_binds.len) return DriverError.INVALID_RESPONSE;
             if (slices.next()) |data_size| {
                 var end_index: usize = 0;
                 for (data_size) |ch| {
@@ -438,10 +446,12 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         //TODO: ADD ERROR CHECK on invalid input
-        fn network_event(self: *Self, state: NetworkHandlerState, aux_buffer: []const u8) void {
+        fn network_event(self: *Self, state: NetworkHandlerState, aux_buffer: []const u8) DriverError!void {
             const id_index = std.mem.indexOf(u8, aux_buffer, ",");
             if (id_index) |id| {
                 const index: usize = aux_buffer[id - 1] - '0';
+                if (index > self.Network_binds.len) return DriverError.INVALID_RESPONSE;
+
                 if (self.Network_binds[index]) |*bd| {
                     bd.state = state;
                     if (bd.event_callback) |callback| {
@@ -459,6 +469,8 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                         callback(client);
                     }
                 }
+            } else {
+                return DriverError.INVALID_RESPONSE;
             }
         }
 
@@ -488,9 +500,10 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         //TODO: ADD MORE AT commands
         //TODO: Fix deadlock on WiFi connect error
         pub fn process(self: *Self) DriverError!void {
-            self.RX_callback_handler(&self.RX_buffer);
-
             switch (self.machine_state) {
+                .reset => {
+                    self.reset();
+                },
                 .init => {
                     self.init_driver() catch return;
                     self.machine_state = Drive_states.WiFiinit;
@@ -512,6 +525,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         fn IDLE_REV(self: *Self) DriverError!void {
             var data: u8 = 0;
             var RX_aux_buffer: Circular_buffer.create_buffer(u8, 50) = .{};
+            self.RX_callback_handler(&self.RX_buffer);
             while (true) {
                 data = self.RX_buffer.get() catch break;
                 switch (data) {
@@ -593,6 +607,23 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 };
                 if (data.data) |to_free| self.inner_alloc.free(to_free);
             }
+        }
+
+        pub fn reset(self: *Self) void {
+            var inner_buffer: [50]u8 = std.mem.zeroes([50]u8);
+
+            //clear buffers
+            self.deinit_driver();
+            self.RX_buffer.clear();
+            self.TX_buffer.clear();
+            self.event_aux_buffer.clear();
+
+            //send RST request
+            _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=3{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.RESET)], postfix });
+            try self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer, .busy = true });
+            try self.event_aux_buffer.push(commands_enum.RESET);
+            //back to init state
+            self.machine_state = .init;
         }
         fn innerWiFi_connect(self: *Self) void {
             if (self.WiFi_AP_SSID) |ssid| {

@@ -1,3 +1,5 @@
+//TODO: remove "process" completely from the microZig implementation when "Framework driver" is added Use notification instead of pull [maybe]
+
 const std = @import("std");
 pub const Circular_buffer = @import("util/circular_buffer.zig");
 
@@ -46,6 +48,7 @@ pub const WiFi_encryption = enum {
 };
 
 pub const commands_enum = enum(u8) {
+    DUMMY,
     RESET,
     ECHO_OFF,
     ECHO_ON,
@@ -67,6 +70,7 @@ pub const commands_enum = enum(u8) {
 
 //This is not necessary since the user cannot send commands directly
 pub const COMMANDS_TOKENS = [_][]const u8{
+    ".",
     "RST",
     "ATE0",
     "ATE1",
@@ -560,6 +564,11 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             self.event_aux_buffer.clear();
             var inner_buffer: [50]u8 = std.mem.zeroes([50]u8);
 
+            //send dummy cmd to clear the TX buffer
+            _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}", .{ COMMANDS_TOKENS[@intFromEnum(commands_enum.DUMMY)], postfix }) catch return DriverError.INVALID_ARGS;
+            self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer, .busy = false }) catch return DriverError.TX_BUFFER_FULL;
+            self.event_aux_buffer.push(commands_enum.DUMMY) catch return DriverError.TASK_BUFFER_FULL;
+
             //send RST request
             _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.RESET)], postfix }) catch return DriverError.INVALID_ARGS;
             self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer, .busy = true }) catch return DriverError.TX_BUFFER_FULL;
@@ -691,6 +700,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         //TODO: add server type param (TCP, TCP6, SSL, SSL6)
+        //TODO: Notify when the server is actually created
         pub fn create_server(self: *Self, port: u16, server_type: NetworkHandlerType, event_callback: *const fn (client: Client) void) DriverError!void {
             const end_bind = div_binds;
             var inner_buffer: [50]u8 = .{0} ** 50;

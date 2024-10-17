@@ -231,8 +231,9 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         //callback handlers
         //TODO: User event callbacks
-        on_cmd_response: ?*const fn (result: CommandResults, cmd: commands_enum) void = null,
-        on_WiFi_respnse: ?*const fn (event: WifiEvent) void = null,
+        internal_user_data: ?*anyopaque = null,
+        on_cmd_response: ?*const fn (result: CommandResults, cmd: commands_enum, user_data: ?*anyopaque) void = null,
+        on_WiFi_respnse: ?*const fn (event: WifiEvent, user_data: ?*anyopaque) void = null,
 
         //TODO: parse commands and use HASH to compare
         fn get_cmd_type(self: *Self, aux_buffer: []const u8) DriverError!void {
@@ -296,7 +297,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 }
             }
             if (self.on_cmd_response) |callback| {
-                callback(state, cmd_result);
+                callback(state, cmd_result, self.internal_user_data);
             }
         }
 
@@ -331,7 +332,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             }
             if (tx_event) |event| {
                 if (self.on_WiFi_respnse) |callback| {
-                    callback(event);
+                    callback(event, self.internal_user_data);
                 }
             }
         }
@@ -369,7 +370,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                         if (ip_flag) {
                             self.Wifi_state = .CONNECTED;
                             if (self.on_WiFi_respnse) |callback| {
-                                callback(WifiEvent.WiFi_GOT_IP);
+                                callback(WifiEvent.WiFi_GOT_IP, self.internal_user_data);
                             }
                         }
                     }
@@ -386,11 +387,11 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                     return DriverError.INVALID_RESPONSE;
                 };
                 switch (error_id) {
-                    '1' => callback(WifiEvent.WiFi_ERROR_TIMEOUT),
-                    '2' => callback(WifiEvent.WiFi_ERROR_PASSWORD),
-                    '3' => callback(WifiEvent.WiFi_ERROR_INVALID_AP),
-                    '4' => callback(WifiEvent.WiFi_ERROR_CONN_FAIL),
-                    else => callback(WifiEvent.WiFi_ERROR_UNKNOWN),
+                    '1' => callback(WifiEvent.WiFi_ERROR_TIMEOUT, self.internal_user_data),
+                    '2' => callback(WifiEvent.WiFi_ERROR_PASSWORD, self.internal_user_data),
+                    '3' => callback(WifiEvent.WiFi_ERROR_INVALID_AP, self.internal_user_data),
+                    '4' => callback(WifiEvent.WiFi_ERROR_CONN_FAIL, self.internal_user_data),
+                    else => callback(WifiEvent.WiFi_ERROR_UNKNOWN, self.internal_user_data),
                 }
             }
         }

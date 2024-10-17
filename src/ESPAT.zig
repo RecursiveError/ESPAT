@@ -185,7 +185,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             event: NetworkEvent,
             rev: ?[]const u8 = null,
 
-            pub fn send(self: *const Client, data: []const u8) DriverError!void {
+            pub fn send(self: *const Client, data: []u8) DriverError!void {
                 try self.driver.send(self.id, data);
             }
 
@@ -211,8 +211,6 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         pub const RX_callback = *const fn (data: RX_buffer_type) void;
         const time_out = 5;
 
-        //internal alloc
-        inner_alloc: std.mem.Allocator = undefined,
         //internal control data, (Do not modify)
         TX_buffer: Circular_buffer.create_buffer(TXEventPkg, 25) = .{},
         RX_buffer: buffer_type = .{},
@@ -292,10 +290,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
             //delete pkg if send fail
             if ((state == .Error) and (cmd_result == .NETWORK_SEND)) {
-                const to_delete = self.Network_pool.get() catch return DriverError.NETWORK_BUFFER_EMPTY;
-                if (to_delete.data) |data| {
-                    self.inner_alloc.free(data);
-                }
+                _ = self.Network_pool.get() catch return DriverError.NETWORK_BUFFER_EMPTY;
             }
             if (self.on_cmd_response) |callback| {
                 callback(state, cmd_result, self.internal_user_data);
@@ -500,8 +495,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             var remain = to_recive;
             var index: usize = 0;
             var data: u8 = 0;
-            var rev = self.inner_alloc.alloc(u8, to_recive) catch return DriverError.ALLOC_FAIL;
-            defer self.inner_alloc.free(rev);
+            var rev: [4096]u8 = .{0} ** 4096;
             while (remain > 0) {
                 data = self.RX_buffer.get() catch {
                     self.RX_callback_handler(&self.RX_buffer);
@@ -517,7 +511,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                         .id = @intCast(id),
                         .driver = self,
                         .event = .ReciveData,
-                        .rev = rev,
+                        .rev = rev[0..index],
                     };
                     callback(client, bd.user_data);
                 }
@@ -559,14 +553,13 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             const id = pkg.descriptor_id;
             if (pkg.data) |data| {
                 self.TX_callback_handler(data);
-                self.inner_alloc.free(data);
                 if (self.Network_binds[id]) |bd| {
                     if (bd.event_callback) |callback| {
                         const client = Client{
                             .id = id,
                             .driver = self,
                             .event = .SendDataComplete,
-                            .rev = null,
+                            .rev = data,
                         };
                         callback(client, bd.user_data);
                     }
@@ -683,10 +676,9 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         pub fn deinit_driver(self: *Self) void {
             while (true) {
-                const data = self.Network_pool.get() catch {
+                _ = self.Network_pool.get() catch {
                     break;
                 };
-                if (data.data) |to_free| self.inner_alloc.free(to_free);
             }
         }
 
@@ -823,9 +815,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             for (0..pool_size) |_| {
                 const pkg = self.Network_pool.get() catch break;
                 if (pkg.descriptor_id < end_bind) {
-                    if (pkg.data) |data| {
-                        self.inner_alloc.free(data);
-                    }
+                    continue;
                 } else {
                     self.Network_pool.push(pkg);
                 }
@@ -835,27 +825,25 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         //TODO: add error check
         //TODO: break data bigger than 2048 into multi 2048 pkgs
         //TODO: delete events from pool in case of erros
-        pub fn send(self: *Self, id: u8, data: []const u8) DriverError!void {
-            if (self.busy_flag) return DriverError.BUSY;
+        pub fn send(self: *Self, id: u8, data: []u8) DriverError!void {
+            const free_events = self.event_aux_buffer.len - self.event_aux_buffer.get_data_size();
+            const free_TX_cmd = self.TX_buffer.len - self.TX_buffer.get_data_size();
+            if ((free_events < 4) or (free_TX_cmd < 2)) return DriverError.BUSY; //keep some space to other commands
             var inner_buffer: [50]u8 = .{0} ** 50;
+
+            const pkg = NetworkPackage{
+                .data = data,
+                .descriptor_id = id,
+            };
+            self.Network_pool.push(pkg) catch {
+                return DriverError.NETWORK_BUFFER_FULL;
+            };
 
             _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}={d},{d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SEND)], id, data.len, postfix }) catch return DriverError.INVALID_ARGS;
             //Send return OK before data send and after data send (<- send OK)
             self.event_aux_buffer.push(commands_enum.NETWORK_SEND) catch return DriverError.TASK_BUFFER_FULL;
             self.event_aux_buffer.push(commands_enum.NETWORK_SEND_RESP) catch return DriverError.TASK_BUFFER_FULL;
             self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer, .busy = true }) catch return DriverError.TX_BUFFER_FULL;
-
-            if (id > self.Network_binds.len) return DriverError.INVALID_BIND;
-            const pkg_data = self.inner_alloc.alloc(u8, data.len) catch return DriverError.ALLOC_FAIL;
-            @memcpy(pkg_data, data);
-            const pkg = NetworkPackage{
-                .data = pkg_data,
-                .descriptor_id = id,
-            };
-            self.Network_pool.push(pkg) catch {
-                self.inner_alloc.free(pkg.data.?);
-                return DriverError.NETWORK_BUFFER_FULL;
-            };
         }
 
         pub fn get_AP_ip(self: *Self) []u8 {
@@ -863,9 +851,9 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         //TODO: add more config param
-        pub fn new(txcallback: anytype, rxcallback: anytype, alloc: std.mem.Allocator) Self {
+        pub fn new(txcallback: anytype, rxcallback: anytype) Self {
             //const ATdrive = create_drive(buffer_size);
-            return .{ .RX_callback_handler = rxcallback, .TX_callback_handler = txcallback, .inner_alloc = alloc };
+            return .{ .RX_callback_handler = rxcallback, .TX_callback_handler = txcallback };
         }
     };
 }

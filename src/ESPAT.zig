@@ -220,6 +220,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         machine_state: Drive_states = .init,
         busy_flag: bool = false,
         Wifi_state: WiFistate = .OFF,
+        last_busy: commands_enum = .DUMMY,
 
         //network data
         Network_binds: [5]?network_handler = .{ null, null, null, null, null },
@@ -289,8 +290,13 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             const cmd_result = self.event_aux_buffer.get() catch return DriverError.AUX_BUFFER_EMPTY;
 
             //delete pkg if send fail
-            if ((state == .Error) and (cmd_result == .NETWORK_SEND)) {
-                _ = self.Network_pool.get() catch return DriverError.NETWORK_BUFFER_EMPTY;
+            if (state == .Error) {
+                if (cmd_result == .NETWORK_SEND) {
+                    _ = self.Network_pool.get() catch return DriverError.NETWORK_BUFFER_EMPTY;
+                    self.busy_flag = false;
+                } else if (cmd_result == .NETWORK_SEND_RESP) {
+                    self.busy_flag = false;
+                }
             }
             if (self.on_cmd_response) |callback| {
                 callback(state, cmd_result, self.internal_user_data);

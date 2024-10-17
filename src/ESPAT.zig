@@ -288,13 +288,12 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
         fn command_response(self: *Self, state: CommandResults) DriverError!void {
             const cmd_result = self.event_aux_buffer.get() catch return DriverError.AUX_BUFFER_EMPTY;
+            if (cmd_result == .NETWORK_SEND_RESP) self.busy_flag = false;
 
             //delete pkg if send fail
             if (state == .Error) {
                 if (cmd_result == .NETWORK_SEND) {
                     _ = self.Network_pool.get() catch return DriverError.NETWORK_BUFFER_EMPTY;
-                    self.busy_flag = false;
-                } else if (cmd_result == .NETWORK_SEND_RESP) {
                     self.busy_flag = false;
                 }
             }
@@ -571,7 +570,6 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                     }
                 }
             }
-            self.busy_flag = false;
         }
 
         //TODO: ADD error returns

@@ -13,6 +13,7 @@ pub fn create_buffer(comptime buffer_type: type, comptime size: comptime_int) ty
         const Self = @This();
         const internal_size = size;
         buffer: [size]buffer_type = std.mem.zeroes([size]buffer_type),
+        len: usize = size,
         begin_index: usize = 0,
         end_index: usize = 0,
 

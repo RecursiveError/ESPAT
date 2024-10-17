@@ -1,4 +1,4 @@
-//TODO: remove "process" completely from the microZig implementation when "Framework driver" is added Use notification instead of pull [maybe]
+//TODO: remove "process" completely from the microZig implementation when "Framework driver" is added, Use notification instead of pull [maybe]
 
 const std = @import("std");
 pub const Circular_buffer = @import("util/circular_buffer.zig");
@@ -17,6 +17,7 @@ pub const DriverError = error{
     TASK_BUFFER_FULL,
     NETWORK_BUFFER_FULL,
     AUX_BUFFER_EMPTY,
+    AUX_BUFFER_FULL,
     NETWORK_BUFFER_EMPTY,
     INVALID_RESPONSE,
     ALLOC_FAIL,
@@ -100,25 +101,24 @@ pub const COMMANDS_RESPOSES_TOKENS = [_][]const u8{
     "CLO",
     "ready",
 };
-pub const COMMAND_DATA_TYPES = [_][]const u8{
-    "IPD",
-    "CIPSTA",
-    "CWJAP",
-};
+pub const COMMAND_DATA_TYPES = [_][]const u8{ "IPD", "CIPSTA", "CWJAP", "STA" };
 
 pub const CommandResults = enum(u8) { Ok, Error };
 
 pub const WIFI_RESPOSE_TOKEN = [_][]const u8{
-    "DIS",
+    "DISC",
     "CON",
-    "GOT",
+    "IP",
 };
 
 pub const WifiEvent = enum(u8) {
     WiFi_CON_START,
-    WiFi_DISCONNECTED,
-    WiFi_CONNECTED,
-    WiFi_GOT_IP,
+    WiFi_AP_CONNECTED,
+    WiFi_AP_GOT_IP,
+    WiFi_AP_DISCONNECTED,
+    WiFi_STA_CONNECTED,
+    WIFi_STA_GOT_IP,
+    WiFi_STA_DISCONNECTED,
     WiFi_ERROR_TIMEOUT,
     WiFi_ERROR_PASSWORD,
     WiFi_ERROR_INVALID_AP,
@@ -209,6 +209,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         pub const RX_buffer_type = *buffer_type;
         pub const TX_callback = *const fn (data: []const u8) void;
         pub const RX_callback = *const fn (data: RX_buffer_type) void;
+        const time_out = 5;
 
         //internal alloc
         inner_alloc: std.mem.Allocator = undefined,
@@ -233,7 +234,8 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         //TODO: User event callbacks
         internal_user_data: ?*anyopaque = null,
         on_cmd_response: ?*const fn (result: CommandResults, cmd: commands_enum, user_data: ?*anyopaque) void = null,
-        on_WiFi_respnse: ?*const fn (event: WifiEvent, user_data: ?*anyopaque) void = null,
+        on_STA_event: ?*const fn (event: WifiEvent, user_data: ?*anyopaque) void = null,
+        on_AP_event: ?*const fn (event: WifiEvent, data: []u8, user_data: ?*anyopaque) void = null,
 
         //TODO: parse commands and use HASH to compare
         fn get_cmd_type(self: *Self, aux_buffer: []const u8) DriverError!void {
@@ -241,10 +243,8 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             const cmd_len = COMMANDS_RESPOSES_TOKENS.len;
             for (0..cmd_len) |COMMAND| {
                 result = std.mem.indexOf(u8, aux_buffer, COMMANDS_RESPOSES_TOKENS[COMMAND]);
-                if (result) |r| {
+                if (result) |_| {
                     self.read_cmd_response(COMMAND, aux_buffer) catch |err| {
-                        _ = std.log.info("read cnd data fail {}", .{err});
-                        _ = std.log.info("data recive {s}, data found {}", .{ aux_buffer, r });
                         return err;
                     };
                     break;
@@ -281,6 +281,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 0 => try self.parse_network_data(aux_buffer),
                 1 => try self.WiFi_get_AP_info(),
                 2 => try self.WiFi_error(),
+                3 => try self.WiFi_get_STA_info(aux_buffer),
                 else => {
                     return DriverError.INVALID_RESPONSE;
                 },
@@ -315,13 +316,13 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             }
             switch (index) {
                 0 => {
-                    tx_event = WifiEvent.WiFi_DISCONNECTED;
+                    tx_event = WifiEvent.WiFi_AP_DISCONNECTED;
                     self.Wifi_state = .DISCONECTED;
                 },
                 1 => tx_event = WifiEvent.WiFi_CON_START,
                 2 => {
                     self.busy_flag = false;
-                    tx_event = WifiEvent.WiFi_CONNECTED;
+                    tx_event = WifiEvent.WiFi_AP_CONNECTED;
                     _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}?{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_IP)], postfix }) catch return;
                     self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer }) catch return DriverError.TX_BUFFER_FULL;
                     self.event_aux_buffer.push(commands_enum.NETWORK_IP) catch return DriverError.TASK_BUFFER_FULL;
@@ -331,7 +332,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 },
             }
             if (tx_event) |event| {
-                if (self.on_WiFi_respnse) |callback| {
+                if (self.on_STA_event) |callback| {
                     callback(event, self.internal_user_data);
                 }
             }
@@ -369,8 +370,8 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                         std.mem.copyForwards(u8, out_pointer, net_data);
                         if (ip_flag) {
                             self.Wifi_state = .CONNECTED;
-                            if (self.on_WiFi_respnse) |callback| {
-                                callback(WifiEvent.WiFi_GOT_IP, self.internal_user_data);
+                            if (self.on_STA_event) |callback| {
+                                callback(WifiEvent.WiFi_AP_GOT_IP, self.internal_user_data);
                             }
                         }
                     }
@@ -382,7 +383,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         fn WiFi_error(self: *Self) DriverError!void {
             self.busy_flag = false;
-            if (self.on_WiFi_respnse) |callback| {
+            if (self.on_STA_event) |callback| {
                 const error_id: u8 = self.RX_buffer.get() catch {
                     return DriverError.INVALID_RESPONSE;
                 };
@@ -394,6 +395,77 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                     else => callback(WifiEvent.WiFi_ERROR_UNKNOWN, self.internal_user_data),
                 }
             }
+        }
+
+        fn WiFi_get_STA_info(self: *Self, aux_buffer: []const u8) DriverError!void {
+            var result: ?usize = null;
+            var info_buf: [20]u8 = .{0} ** 20;
+            var sta_event = WifiEvent.WiFi_ERROR_UNKNOWN;
+            if (self.on_AP_event) |callback| {
+                for (0..WIFI_RESPOSE_TOKEN.len) |index| {
+                    result = std.mem.indexOf(u8, aux_buffer, WIFI_RESPOSE_TOKEN[index]);
+                    if (result) |_| {
+                        switch (index) {
+                            0 => {
+                                try self.get_STA_mac(&info_buf);
+                                sta_event = .WiFi_STA_DISCONNECTED;
+                            },
+                            1 => {
+                                try self.get_STA_mac(&info_buf);
+                                sta_event = .WiFi_STA_CONNECTED;
+                            },
+                            2 => {
+                                try self.get_STA_ip(&info_buf);
+                                sta_event = .WIFi_STA_GOT_IP;
+                            },
+                            else => return DriverError.UNKNOWN_ERROR,
+                        }
+                        callback(sta_event, &info_buf, self.internal_user_data);
+                        return;
+                    }
+                }
+            }
+        }
+
+        fn get_STA_mac(self: *Self, out_buf: []u8) DriverError!void {
+            try self.wait_for_bytes(19);
+            var aux_buffer: Circular_buffer.create_buffer(u8, 50) = .{};
+            var data: u8 = 0;
+            while (data != '\n') {
+                data = self.RX_buffer.get() catch {
+                    return DriverError.UNKNOWN_ERROR;
+                };
+                aux_buffer.push(data) catch return DriverError.AUX_BUFFER_FULL;
+            }
+            const buffer_len = aux_buffer.get_data_size() - 3;
+            const mac_slice = aux_buffer.raw_buffer()[1..buffer_len];
+            std.mem.copyForwards(u8, out_buf, mac_slice);
+        }
+
+        fn get_STA_ip(self: *Self, out_buf: []u8) DriverError!void {
+            try self.wait_for_bytes(33);
+            var aux_buffer: Circular_buffer.create_buffer(u8, 50) = .{};
+            var data: u8 = 0;
+            while (data != '\n') {
+                data = self.RX_buffer.get() catch {
+                    return DriverError.UNKNOWN_ERROR;
+                };
+                aux_buffer.push(data) catch return DriverError.AUX_BUFFER_FULL;
+            }
+            const buffer_len = aux_buffer.get_data_size() - 3;
+            const ip_slice = aux_buffer.raw_buffer()[21..buffer_len];
+            std.mem.copyForwards(u8, out_buf, ip_slice);
+        }
+
+        fn wait_for_bytes(self: *Self, data_len: usize) DriverError!void {
+            var time: usize = time_out;
+            var RX_data_len = self.RX_buffer.get_data_size();
+            while (time > 0) : (time -= 1) {
+                self.RX_callback_handler(&self.RX_buffer);
+                RX_data_len = self.RX_buffer.get_data_size();
+                if (RX_data_len >= data_len) return;
+            }
+            return DriverError.INVALID_RESPONSE;
         }
 
         fn parse_network_data(self: *Self, aux_buffer: []const u8) DriverError!void {
@@ -550,7 +622,6 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         fn IDLE_TRANS(self: *Self) void {
             if (self.busy_flag) {
-                _ = std.log.info("TX busy, waiting tasks: {}", .{self.TX_buffer.get_data_size()});
                 return;
             }
             const next_cmd = self.TX_buffer.get() catch return;

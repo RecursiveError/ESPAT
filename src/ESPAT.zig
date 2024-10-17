@@ -158,9 +158,9 @@ pub const TXEventPkg = struct {
 };
 
 //TODO: add more config
-//TODO: add Restart driver
 //TODO: change "command_response(error)" to internal error handler with stacktrace
 //TODO: enbale full suport for SSL (at the moment it is not possible to configure SSL certificates)
+//TODO: Add device event
 //TODO: add eneble_IPv6 func [maybe]
 //TODO: add bluetooth LE suport for ESP32 modules [maybe]
 //TODO: add suport for optional AT frimware features [maybe]
@@ -193,12 +193,14 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 try self.driver.close(self.id);
             }
         };
+        const ServerCallback = *const fn (client: Client, user_data: ?*anyopaque) void;
 
         pub const network_handler = struct {
             descriptor_id: u8 = 255,
             state: NetworkHandlerState = .None,
             NetworkHandlerType: NetworkHandlerType = .None,
-            event_callback: ?*const fn (client: Client) void = null,
+            event_callback: ?ServerCallback = null,
+            user_data: ?*anyopaque = null,
         };
 
         pub const NetworkPackage = struct { descriptor_id: u8 = 255, data: ?[]u8 = null };
@@ -444,7 +446,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                         .event = .ReciveData,
                         .rev = rev,
                     };
-                    callback(client);
+                    callback(client, bd.user_data);
                 }
             }
             self.machine_state = Drive_states.IDLE;
@@ -471,7 +473,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                             .driver = self,
                             .rev = null,
                         };
-                        callback(client);
+                        callback(client, bd.user_data);
                     }
                 }
             } else {
@@ -493,7 +495,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                             .event = .SendDataComplete,
                             .rev = null,
                         };
-                        callback(client);
+                        callback(client, bd.user_data);
                     }
                 }
             }
@@ -565,6 +567,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             var inner_buffer: [50]u8 = std.mem.zeroes([50]u8);
 
             //send dummy cmd to clear the TX buffer
+
             _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}", .{ COMMANDS_TOKENS[@intFromEnum(commands_enum.DUMMY)], postfix }) catch return DriverError.INVALID_ARGS;
             self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer, .busy = false }) catch return DriverError.TX_BUFFER_FULL;
             self.event_aux_buffer.push(commands_enum.DUMMY) catch return DriverError.TASK_BUFFER_FULL;
@@ -650,7 +653,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             try self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer });
         }
 
-        pub fn bind(self: *Self, net_type: NetworkHandlerType, event_callback: *const fn (client: Client) void) DriverError!u8 {
+        pub fn bind(self: *Self, net_type: NetworkHandlerType, event_callback: ServerCallback, user_data: ?*anyopaque) DriverError!u8 {
             const start_bind = div_binds;
 
             for (start_bind..self.Network_binds.len) |index| {
@@ -662,6 +665,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                         .descriptor_id = id,
                         .NetworkHandlerType = net_type,
                         .event_callback = event_callback,
+                        .user_data = user_data,
                     };
                     self.Network_binds[index] = new_bind;
                     return id;
@@ -701,7 +705,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         //TODO: add server type param (TCP, TCP6, SSL, SSL6)
         //TODO: Notify when the server is actually created
-        pub fn create_server(self: *Self, port: u16, server_type: NetworkHandlerType, event_callback: *const fn (client: Client) void) DriverError!void {
+        pub fn create_server(self: *Self, port: u16, server_type: NetworkHandlerType, event_callback: ServerCallback, user_data: ?*anyopaque) DriverError!void {
             const end_bind = div_binds;
             var inner_buffer: [50]u8 = .{0} ** 50;
 
@@ -719,10 +723,11 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             self.event_aux_buffer.push(commands_enum.NETWORK_SERVER) catch return DriverError.TASK_BUFFER_FULL;
             self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer }) catch return DriverError.TX_BUFFER_FULL;
             for (0..end_bind) |id| {
-                self.Network_binds[id] = .{
+                self.Network_binds[id] = network_handler{
                     .descriptor_id = @intCast(id),
                     .NetworkHandlerType = NetworkHandlerType.TCP,
                     .event_callback = event_callback,
+                    .user_data = user_data,
                 };
             }
         }

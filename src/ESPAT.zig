@@ -100,6 +100,7 @@ pub const COMMANDS_RESPOSES_TOKENS = [_][]const u8{
     "CON",
     "CLO",
     "ready",
+    "FAIL",
 };
 pub const COMMAND_DATA_TYPES = [_][]const u8{ "IPD", "CIPSTA", "CWJAP", "STA" };
 
@@ -260,6 +261,10 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 3 => try self.network_event(NetworkHandlerState.Connected, aux_buffer),
                 4 => try self.network_event(NetworkHandlerState.Closed, aux_buffer),
                 5 => self.busy_flag = false,
+                6 => {
+                    _ = self.event_aux_buffer.get() catch return DriverError.UNKNOWN_ERROR;
+                    self.busy_flag = false;
+                },
                 else => return DriverError.INVALID_RESPONSE,
             }
         }

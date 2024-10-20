@@ -31,55 +31,62 @@ pub const microzig_options = .{
 const ATdrive = ESP_AT.create_drive(4096, 10, ESP_AT.WiFiDriverType.AP_STA, ESP_AT.NetworkDriveType.SERVER_ONLY);
 const wifi_ssid = "SSID";
 const wifi_password = "PASSWORD";
-var wd_rdy = false;
 const server_port: u16 = 1234;
-const html = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<!DOCTYPE html>\r\n<html lang=\"pt-BR\">\r\n<head>\r\n<meta charset=\"UTF-8\">\r\n<title>Hello World</title>\r\n<p>All Your Codebase Are Belong To Us</p>\r\n</head>\r\n<body>\r\n<h1>Hello World</h1>\r\n</body>\r\n</html>\r\n";
 
-
-//GET RESULT
-fn result_callback(result: ESP_AT.CommandResults, cmd: ESP_AT.commands_enum) void {
+fn result_callback(result: ESP_AT.CommandResults, cmd: ESP_AT.commands_enum, user_data: ?*anyopaque) void {
+    _ = user_data;
     const command = ESP_AT.COMMANDS_TOKENS[@intFromEnum(cmd)];
     if (result == ESP_AT.CommandResults.Ok) {
         _ = std.log.info("Command {s} return Ok", .{command});
-    } else {}
+    } else {
+        _ = std.log.info("Command {s} return FAIL", .{command});
+    }
 }
 
-
-//Print WiFi events
-fn wifiEvent_callback(event: ESP_AT.WifiEvent) void {
+fn wifiEvent_callback(event: ESP_AT.WifiEvent, user_data: ?*anyopaque) void {
+    _ = user_data;
     switch (event) {
         ESP_AT.WifiEvent.WiFi_CON_START => {
             _ = std.log.info("START WIFI!!!", .{});
         },
-        ESP_AT.WifiEvent.WiFi_DISCONNECTED => {
+        ESP_AT.WifiEvent.WiFi_AP_DISCONNECTED => {
             _ = std.log.info("FAIL TO CONNECT TO WIFI!!!", .{});
         },
-        ESP_AT.WifiEvent.WiFi_CONNECTED => {
+        ESP_AT.WifiEvent.WiFi_AP_CONNECTED => {
             _ = std.log.info("WIFI CONNECTED TO {s}", .{wifi_ssid});
         },
-        ESP_AT.WifiEvent.WiFi_GOT_IP => {
+        ESP_AT.WifiEvent.WiFi_AP_GOT_IP => {
             _ = std.log.info("WIFI GOT  IP", .{});
-            wd_rdy = true;
         },
         else => _ = std.log.info("WIFI GOT {}", .{event}),
     }
 }
 
+fn device_callback(event: ESP_AT.WifiEvent, data: []u8, user_data: ?*anyopaque) void {
+    _ = user_data;
+    std.log.info("event {} device {s}", .{ event, data });
+}
 
+const html = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<!DOCTYPE html>\r\n<html lang=\"pt-BR\">\r\n<head>\r\n<meta charset=\"UTF-8\">\r\n<title>Hello World</title>\r\n<p>All Your Codebase Are Belong To Us</p>\r\n</head>\r\n<body>\r\n<h1>Hello World</h1>\r\n</body>\r\n</html>\r\n";
 
-fn server_callback(client: ATdrive.Client) void {
+fn server_callback(client: ATdrive.Client, user_data: ?*anyopaque) void {
+    _ = user_data;
     switch (client.event) {
         .Connected => {},
         .Closed => {},
         .ReciveData => {
             if (client.rev) |data| {
-                _ = std.log.info("server got {s}", .{data}); //read client request (NOTE: The data may come in multiple packets due to the behavior of the module)
+                _ = std.log.info("server got {s}", .{data});
             }
-            client.send(html) catch |err| {
+            client.send(@constCast(html)) catch |err| {
                 _ = std.log.info("SERVER: got error {}", .{err});
             };
+            client.close() catch |err| {
+                _ = std.log.info("SERVER: close got error {}", .{err});
+            };
         },
-        .SendDataComplete => client.close() catch return, //Wait until the packet is sent before closing the connection
+        .SendDataComplete => {},
+        .SendDataFail => {},
     }
 }
 
@@ -99,14 +106,15 @@ fn rx_callback(data: ATdrive.RX_buffer_type) void {
     var rx_data: u8 = 0;
     for (0..rv_internal_buf.len) |index| {
         rx_data = rv_internal_buf[index];
-        if (rx_data == 0) break;
+        if (rx_data == 0) {
+            break;
+        }
         data.push(rx_data) catch {
             break;
         };
     }
 }
 
-//send data until '\0'
 fn TX_callback(data: []const u8) void {
     var end: usize = data.len;
     for (0..data.len) |index| {
@@ -118,7 +126,6 @@ fn TX_callback(data: []const u8) void {
     _ = WiFiuart.write_blocking(data[0..end], time.Duration.from_ms(200)) catch {
         WiFiuart.clear_errors();
     };
-    _ = std.log.info("sending {s}", .{data});
 }
 
 pub fn main() !void {
@@ -126,7 +133,6 @@ pub fn main() !void {
         pin.set_function(.uart);
     }
 
-    //ENABLE LOG UART
     uart.apply(.{
         .baud_rate = baud_rate,
         .clock_config = rp2040.clock_config,
@@ -134,45 +140,41 @@ pub fn main() !void {
 
     rp2040.uart.init_logger(uart);
 
-    //ENEBLE WIFI module UART
     WiFiuart.apply(.{
         .baud_rate = WiFibaud_rate,
         .clock_config = rp2040.clock_config,
-        .flow_control = rp2040.uart.FlowControl.RTS, //Enable RTS pin in UART | TODO: send pull request to RP2040 HAL
+        .flow_control = rp2040.uart.FlowControl.RTS,
     });
 
-    var buffer: [2048 * 6]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buffer);
-
-    var my_drive = ATdrive.new(TX_callback, rx_callback, fba.allocator()); //create driver
+    var my_drive = ATdrive.new(TX_callback, rx_callback);
+    my_drive.on_STA_event = wifiEvent_callback;
+    my_drive.on_AP_event = device_callback;
     defer my_drive.deinit_driver();
-
-    //add events callback 
-    my_drive.on_cmd_response = result_callback;
-    my_drive.on_WiFi_respnse = wifiEvent_callback;
-
-    //create AP (only in AP or AP_STA MODE)
+    try my_drive.init_driver();
     my_drive.WiFi_config_AP("banana", "123456789", 5, ESP_AT.WiFi_encryption.OPEN) catch |err| {
         _ = std.log.info("got error: {}", .{err});
         return;
     };
 
-    //connecte to a AP (only in STA or AP_STA mode)
     try my_drive.WiFi_connect_AP(wifi_ssid, wifi_password);
+    my_drive.create_server(server_port, ESP_AT.NetworkHandlerType.TCP, server_callback, null) catch |Err| {
+        _ = std.log.info("server create fail: {}", .{Err});
+    };
     time.sleep_ms(2500);
-
+    while (my_drive.Wifi_state != .CONNECTED) {
+        my_drive.process() catch |err| {
+            _ = std.log.info("Driver got error: {}", .{err});
+        };
+    }
+    const ip = my_drive.get_AP_ip();
+    _ = std.log.info("sERVER OPEN ON {s}:{}", .{ ip, server_port });
     while (true) {
-        my_drive.process(); //need to call this function periodically
-
-        //when configured as STA or AP_STA, it is necessary to wait until the "WiFi_GOT_IP" "WIFI_ERROR_x" event, as the module goes into "Busy time" during this time
-        if (wd_rdy) {
-            try my_drive.create_server(server_port, server_callback);
-            const ip = my_drive.get_AP_ip();
-            _ = std.log.info("sERVER OPEN ON {s}:{}", .{ ip, server_port });
-            wd_rdy = false;
-        }
-        time.sleep_ms(200);
+        my_drive.process() catch |err| {
+            _ = std.log.info("Driver got error: {}", .{err});
+        };
+        time.sleep_ms(20);
     }
 }
+
 ```
 

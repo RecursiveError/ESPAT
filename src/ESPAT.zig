@@ -600,10 +600,6 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             }
         }
 
-        //TODO: ADD error returns
-        //TODO: block TX on Busy
-        //TODO: ADD MORE AT commands
-        //TODO: Fix deadlock on WiFi connect error
         pub fn process(self: *Self) DriverError!void {
             switch (self.machine_state) {
                 .init => {

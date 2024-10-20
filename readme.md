@@ -1,17 +1,35 @@
 # ESPAT
 simple driver made in Zig to use ESP(32/8266) boards as WiFi module via AT command firmware
 
-***Important***: This driver is still under development and invalid inputs will cause errors
+***Important***: This driver is still under development, ~~and invalid inputs will cause errors~~ There are checks for most errors, but invalid inputs may cause deadlocks or break
 
 __Minimum AT Firmware Version__: 2.2.0.0  
 
 **Warning**: for Ai-thinker modules such as ESP-01 or ESP-12E with Boantong AT firmware it is still possible to use the modes: client only and server only, but be aware that some boards do not provide CTS and RTS pins for UART interface, so you are responsible for ensuring that no data is lost
 
+## TODO list
+List of all the tasks that need to be done in the code:
+- add uart config
+- rework commands check for avoid errors like: "SEND OK == OK"
+- add more config (for all commands)
+- change "command_response(error)" to internal error handler with stacktrace
+- enbale full suport for SSL (at the moment it is not possible to configure SSL certificates)
+- add more functions to clients
+- generate event "SendDataFail" on network erros to avoid memory leaks
+- add timeout to avoid deadlocks on read functions
+- add error checking for invalid closed erros
+- add optinal args for WiFi
+- break data bigger than 2048 into multi 2048 pkgs on send
+- add eneble_IPv6 func [maybe]
+- add bluetooth LE suport for ESP32 modules [maybe]
+- add suport for optional AT frimware features [maybe]
+- remove "process" completely from the microZig implementation when "Framework driver" is added, Use notification instead of pull [maybe]
+
 ## Supported Features
 - [ ] SSL config
 - [x] STA WiFi mode
 - [X] AP WiFi mode
-- [ ] AP + STA WiFi mode
+- [x] AP + STA WiFi mode
 - [x] TCP/UDP Client
 - [ ] SSL Client
 - [x] TCP Server

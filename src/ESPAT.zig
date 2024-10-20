@@ -60,7 +60,6 @@ pub const commands_enum = enum(u8) {
     WIFI_AUTOCONN,
     NETWORK_CONNECT,
     NETWORK_SEND,
-    NETWORK_SEND_RESP,
     NETWORK_CLOSE,
     NETWORK_IP,
     NETWORK_SERVER_CONF,
@@ -82,7 +81,6 @@ pub const COMMANDS_TOKENS = [_][]const u8{
     "CWAUTOCONN",
     "CIPSTART",
     "CIPSEND",
-    "SEND",
     "CIPCLOSE",
     "CIPSTA",
     "CIPSERVERMAXCONN",
@@ -93,14 +91,15 @@ const prefix = "AT+";
 const infix = "_CUR";
 const postfix = "\r\n";
 
+//TODO: rework commands check for avoid errors like: "SEND OK == OK"
 pub const COMMANDS_RESPOSES_TOKENS = [_][]const u8{
+    "SEND", //send need to be check first due "SEND OK" response,
     "OK",
     "ERROR",
     "WIFI",
     "CON",
     "CLO",
     "ready",
-    "FAIL",
 };
 pub const COMMAND_DATA_TYPES = [_][]const u8{ "IPD", "CIPSTA", "CWJAP", "STA" };
 
@@ -110,6 +109,11 @@ pub const WIFI_RESPOSE_TOKEN = [_][]const u8{
     "DISC",
     "CON",
     "IP",
+};
+
+pub const SEND_RESPONSE_TOKEN = [_][]const u8{
+    "OK",
+    "FAIL",
 };
 
 pub const WifiEvent = enum(u8) {
@@ -133,6 +137,7 @@ pub const NetworkEvent = enum {
     Closed,
     ReciveData,
     SendDataComplete,
+    SendDataFail,
 };
 
 pub const NetworkHandlerState = enum {
@@ -158,10 +163,9 @@ pub const TXEventPkg = struct {
     cmd_data: [50]u8,
 };
 
-//TODO: add more config
+//TODO: add more config (for all commands)
 //TODO: change "command_response(error)" to internal error handler with stacktrace
 //TODO: enbale full suport for SSL (at the moment it is not possible to configure SSL certificates)
-//TODO: Add device event
 //TODO: add eneble_IPv6 func [maybe]
 //TODO: add bluetooth LE suport for ESP32 modules [maybe]
 //TODO: add suport for optional AT frimware features [maybe]
@@ -210,7 +214,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         pub const RX_buffer_type = *buffer_type;
         pub const TX_callback = *const fn (data: []const u8) void;
         pub const RX_callback = *const fn (data: RX_buffer_type) void;
-        const time_out = 5;
+        const time_out = 5; //TODO: add user defined timeout in MS
 
         //internal control data, (Do not modify)
         TX_buffer: Circular_buffer.create_buffer(TXEventPkg, 25) = .{},
@@ -219,9 +223,9 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         RX_callback_handler: RX_callback,
         event_aux_buffer: Circular_buffer.create_buffer(commands_enum, 25) = .{},
         machine_state: Drive_states = .init,
-        busy_flag: bool = false,
+        busy_flag: bool = false, //TODO: Create a better busy interface
         Wifi_state: WiFistate = .OFF,
-        last_busy: commands_enum = .DUMMY,
+        last_busy: commands_enum = .DUMMY, //for debug only
 
         //network data
         Network_binds: [5]?network_handler = .{ null, null, null, null, null },
@@ -255,16 +259,13 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         fn read_cmd_response(self: *Self, cmd_id: usize, aux_buffer: []const u8) DriverError!void {
             //TODO: change this
             switch (cmd_id) {
-                0 => try self.command_response(CommandResults.Ok),
-                1 => try self.command_response(CommandResults.Error),
-                2 => try self.wifi_response(aux_buffer),
-                3 => try self.network_event(NetworkHandlerState.Connected, aux_buffer),
-                4 => try self.network_event(NetworkHandlerState.Closed, aux_buffer),
-                5 => self.busy_flag = false,
-                6 => {
-                    _ = self.event_aux_buffer.get() catch return DriverError.UNKNOWN_ERROR;
-                    self.busy_flag = false;
-                },
+                1 => try self.command_response(CommandResults.Ok),
+                2 => try self.command_response(CommandResults.Error),
+                3 => try self.wifi_response(aux_buffer),
+                4 => try self.network_event(NetworkHandlerState.Connected, aux_buffer),
+                5 => try self.network_event(NetworkHandlerState.Closed, aux_buffer),
+                0 => try self.network_send_event(aux_buffer), //TODO fix this after rework
+                6 => self.busy_flag = false, //TODO: add timeout for ready state
                 else => return DriverError.INVALID_RESPONSE,
             }
         }
@@ -293,12 +294,10 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
         fn command_response(self: *Self, state: CommandResults) DriverError!void {
             const cmd_result = self.event_aux_buffer.get() catch return DriverError.AUX_BUFFER_EMPTY;
-            if (cmd_result == .NETWORK_SEND_RESP) self.busy_flag = false;
-
             //delete pkg if send fail
             if (state == .Error) {
                 if (cmd_result == .NETWORK_SEND) {
-                    _ = self.Network_pool.get() catch return DriverError.NETWORK_BUFFER_EMPTY;
+                    _ = self.Network_pool.get() catch return DriverError.NETWORK_BUFFER_EMPTY; //TODO: generate event "SendDataFail" to avoid memory leaks
                     self.busy_flag = false;
                 }
             }
@@ -530,6 +529,8 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         //TODO: ADD ERROR CHECK on invalid input
+        //TODO: clear all Network pkgs on connection close event
+        //TODO: separe network event in two functions
         fn network_event(self: *Self, state: NetworkHandlerState, aux_buffer: []const u8) DriverError!void {
             const id_index = std.mem.indexOf(u8, aux_buffer, ",");
             if (id_index) |id| {
@@ -558,22 +559,44 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             }
         }
 
+        fn network_send_event(self: *Self, aux_buffer: []const u8) DriverError!void {
+            self.busy_flag = false;
+            var result: ?usize = null;
+            for (0..SEND_RESPONSE_TOKEN.len) |index| {
+                result = std.mem.indexOf(u8, aux_buffer, SEND_RESPONSE_TOKEN[index]);
+                if (result) |_| {
+                    try self.network_send_resposnse(index);
+                }
+                return;
+            }
+            return DriverError.INVALID_RESPONSE;
+        }
+
+        fn network_send_resposnse(self: *Self, response_id: usize) DriverError!void {
+            const to_free = self.Network_pool.get() catch return DriverError.NETWORK_BUFFER_EMPTY;
+            const pkg_id = to_free.descriptor_id;
+            const event: NetworkEvent = switch (response_id) {
+                0 => NetworkEvent.SendDataComplete,
+                1 => NetworkEvent.SendDataFail,
+                else => unreachable,
+            };
+            if (self.Network_binds[pkg_id]) |*bd| {
+                if (bd.event_callback) |callback| {
+                    const client: Client = .{
+                        .driver = self,
+                        .event = event,
+                        .id = pkg_id,
+                        .rev = to_free.data,
+                    };
+                    callback(client, bd.user_data);
+                }
+            }
+        }
+
         fn network_send_data(self: *Self) DriverError!void {
-            const pkg = self.Network_pool.get() catch return DriverError.NETWORK_BUFFER_EMPTY;
-            const id = pkg.descriptor_id;
+            const pkg = self.Network_pool.peek_at(self.Network_pool.get_begin_index()) catch return DriverError.NETWORK_BUFFER_EMPTY;
             if (pkg.data) |data| {
                 self.TX_callback_handler(data);
-                if (self.Network_binds[id]) |bd| {
-                    if (bd.event_callback) |callback| {
-                        const client = Client{
-                            .id = id,
-                            .driver = self,
-                            .event = .SendDataComplete,
-                            .rev = data,
-                        };
-                        callback(client, bd.user_data);
-                    }
-                }
             }
         }
 
@@ -683,6 +706,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             self.machine_state = Drive_states.IDLE;
         }
 
+        //TODO: send reaming network pkgs with "SendDataFail" event for avoid memory leaks
         pub fn deinit_driver(self: *Self) void {
             while (true) {
                 _ = self.Network_pool.get() catch {
@@ -691,6 +715,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             }
         }
 
+        //TODO: deinit all data here
         pub fn reset(self: *Self) DriverError!void {
             self.machine_state = .init;
         }
@@ -769,6 +794,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             }
         }
 
+        //TODO: add error checking for invalid closed erros
         pub fn close(self: *Self, id: u8) DriverError!void {
             var inner_buffer: [50]u8 = .{0} ** 50;
             _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}={d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_CLOSE)], id, postfix }) catch return DriverError.INVALID_ARGS;
@@ -805,6 +831,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             }
         }
 
+        //TODO: wait for commands respose for delete data from pool to avois deadlocks (also generate "SendDataFail" event for avoid memory leaks)
         pub fn delete_server(self: *Self) DriverError!void {
             var inner_buffer: [50]u8 = .{0} ** 50;
             const end_bind = div_binds;
@@ -849,9 +876,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             };
 
             _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}={d},{d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SEND)], id, data.len, postfix }) catch return DriverError.INVALID_ARGS;
-            //Send return OK before data send and after data send (<- send OK)
             self.event_aux_buffer.push(commands_enum.NETWORK_SEND) catch return DriverError.TASK_BUFFER_FULL;
-            self.event_aux_buffer.push(commands_enum.NETWORK_SEND_RESP) catch return DriverError.TASK_BUFFER_FULL;
             self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer, .busy = true }) catch return DriverError.TX_BUFFER_FULL;
         }
 

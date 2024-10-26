@@ -9,20 +9,14 @@ __Minimum AT Firmware Version__: 2.2.0.0
 
 ## TODO list
 List of all the tasks that need to be done in the code:
-- add uart config
-- rework commands check for avoid errors like: "SEND OK == OK"
 - add more config (for all commands)
-- change "command_response(error)" to internal error handler with stacktrace
 - enbale full suport for SSL (at the moment it is not possible to configure SSL certificates)
 - add more functions to clients
-- generate event "SendDataFail" on network erros to avoid memory leaks
 - add timeout to avoid deadlocks on read functions
-- add error checking for invalid closed erros
 - add optinal args for WiFi
 - break data bigger than 2048 into multi 2048 pkgs on send
 - add eneble_IPv6 func [maybe]
 - add bluetooth LE suport for ESP32 modules [maybe]
-- add suport for optional AT frimware features [maybe]
 - remove "process" completely from the microZig implementation when "Framework driver" is added, Use notification instead of pull [maybe]
 
 ## Supported Features

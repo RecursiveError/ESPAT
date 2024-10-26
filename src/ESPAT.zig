@@ -202,7 +202,6 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         const ServerCallback = *const fn (client: Client, user_data: ?*anyopaque) void;
 
         pub const network_handler = struct {
-            descriptor_id: u8 = 255,
             state: NetworkHandlerState = .None,
             NetworkHandlerType: NetworkHandlerType = .None,
             event_callback: ?ServerCallback = null,
@@ -819,7 +818,6 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 } else {
                     const id: u8 = @intCast(index);
                     const new_bind: network_handler = .{
-                        .descriptor_id = id,
                         .NetworkHandlerType = net_type,
                         .event_callback = event_callback,
                         .user_data = user_data,
@@ -939,7 +937,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         //TODO: add more config param
-        pub fn new(txcallback: anytype, rxcallback: anytype) Self {
+        pub fn new(txcallback: TX_callback, rxcallback: RX_callback) Self {
             //const ATdrive = create_drive(buffer_size);
             return .{ .RX_callback_handler = rxcallback, .TX_callback_handler = txcallback };
         }

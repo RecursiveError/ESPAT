@@ -176,19 +176,13 @@ pub const TXEventPkg = struct {
 //TODO: add eneble_IPv6 func [maybe]
 //TODO: add bluetooth LE suport for ESP32 modules [maybe]
 //TODO: add suport for optional AT frimware features [maybe]
-pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: comptime_int, comptime Wifi_type: WiFiDriverType, comptime network_type: NetworkDriveType) type {
+pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: comptime_int) type {
     if (RX_SIZE <= 50) @compileError("RX SIZE CANNOT BE LESS THAN 50 byte");
     if (network_pool_size <= 5) @compileError(" NETWORK POOL SIZE CANNOT BE LESS THAN 5 events");
-    const max_binds = switch (network_type) {
-        .SERVER_CLIENT => 3,
-        .SERVER_ONLY => 5,
-        .CLIENT_ONLY => 0,
-    };
     return struct {
 
         // data types
         const Self = @This();
-        const div_binds = max_binds;
 
         //TODO: add more functions
         pub const Client = struct {
@@ -217,7 +211,6 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         pub const NetworkPackage = struct { descriptor_id: u8 = 255, data: ?[]u8 = null };
         const buffer_type = Circular_buffer.create_buffer(u8, RX_SIZE);
-        const Wifi_mode = Wifi_type;
         pub const RX_buffer_type = *buffer_type;
         pub const TX_callback = *const fn (data: []const u8) void;
         pub const RX_callback = *const fn (data: RX_buffer_type) void;
@@ -233,6 +226,9 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         busy_flag: bool = false, //TODO: Create a better busy interface
         Wifi_state: WiFistate = .OFF,
         last_busy: commands_enum = .DUMMY, //for debug only
+        Wifi_mode: WiFiDriverType = .NONE,
+        network_mode: NetworkDriveType = .CLIENT_ONLY,
+        div_binds: usize = 0,
 
         //network data
         Network_binds: [5]?network_handler = .{ null, null, null, null, null },
@@ -736,22 +732,10 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             try self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer });
             try self.event_aux_buffer.push(commands_enum.IP_MUX);
 
-            //set WiFi to STA and AP
-            _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}={d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_SET_MODE)], @intFromEnum(Wifi_mode), postfix });
-            try self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer });
-            try self.event_aux_buffer.push(commands_enum.WIFI_SET_MODE);
-
             //disable wifi auto connection
             _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=0{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_AUTOCONN)], postfix });
             try self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer });
             try self.event_aux_buffer.push(commands_enum.WIFI_AUTOCONN);
-
-            if (network_type == NetworkDriveType.SERVER_CLIENT) {
-                //configure server to MAX connections to 3
-                _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=3{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER_CONF)], postfix });
-                try self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer });
-                try self.event_aux_buffer.push(commands_enum.NETWORK_SERVER_CONF);
-            }
             self.machine_state = Drive_states.IDLE;
         }
 
@@ -771,9 +755,9 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         //TODO: add more config
         pub fn WiFi_connect_AP(self: *Self, ssid: []const u8, password: []const u8) DriverError!void {
-            if (Wifi_type == WiFiDriverType.AP) {
+            if (self.Wifi_mode == .AP) {
                 return DriverError.STA_OFF;
-            } else if (Wifi_type == WiFiDriverType.NONE) {
+            } else if (self.Wifi_mode == WiFiDriverType.NONE) {
                 return DriverError.WIFI_OFF;
             }
             const pwd_len = password.len;
@@ -787,9 +771,9 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         //TODO: add optinal args
         pub fn WiFi_config_AP(self: *Self, ssid: []const u8, password: []const u8, channel: u8, ecn: WiFi_encryption) !void {
-            if (Wifi_type == WiFiDriverType.STA) {
+            if (self.Wifi_mode == .STA) {
                 return DriverError.AP_OFF;
-            } else if (Wifi_type == WiFiDriverType.NONE) {
+            } else if (self.Wifi_mode == .NONE) {
                 return DriverError.WIFI_OFF;
             }
             if (ssid.len == 0) return DriverError.INVALID_ARGS;
@@ -800,8 +784,34 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             try self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer });
         }
 
+        pub fn set_WiFi_mode(self: *Self, mode: WiFiDriverType) !void {
+            var inner_buffer: [50]u8 = .{0} ** 50;
+
+            _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}={d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_SET_MODE)], @intFromEnum(mode), postfix });
+            try self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer });
+            try self.event_aux_buffer.push(commands_enum.WIFI_SET_MODE);
+            self.Wifi_mode = mode;
+        }
+        pub fn set_network_mode(self: *Self, mode: NetworkDriveType) !void {
+            var inner_buffer: [50]u8 = .{0} ** 50;
+            if (mode == .SERVER_CLIENT) {
+                //configure server to MAX connections to 3
+                _ = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=3{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER_CONF)], postfix });
+                try self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer });
+                try self.event_aux_buffer.push(commands_enum.NETWORK_SERVER_CONF);
+            }
+
+            self.div_binds = switch (mode) {
+                .CLIENT_ONLY => 0,
+                .SERVER_ONLY => 5,
+                .SERVER_CLIENT => 3,
+            };
+
+            self.network_mode = mode;
+        }
+
         pub fn bind(self: *Self, net_type: NetworkHandlerType, event_callback: ServerCallback, user_data: ?*anyopaque) DriverError!u8 {
-            const start_bind = div_binds;
+            const start_bind = self.div_binds;
 
             for (start_bind..self.Network_binds.len) |index| {
                 if (self.Network_binds[index]) |_| {
@@ -823,7 +833,6 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         //TODO: ADD IPv6
         pub fn connect(self: *Self, id: u8, host: []const u8, port: u16) DriverError!void {
-            if (self.busy_flag) return DriverError.BUSY;
             if (id > self.Network_binds.len) return DriverError.INVALID_BIND;
             var inner_buffer: [50]u8 = .{0} ** 50;
             if (self.Network_binds[id]) |bd| {
@@ -854,18 +863,14 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         //TODO: add server type param (TCP, TCP6, SSL, SSL6)
         //TODO: Notify when the server is actually created
         pub fn create_server(self: *Self, port: u16, server_type: NetworkHandlerType, event_callback: ServerCallback, user_data: ?*anyopaque) DriverError!void {
-            const end_bind = div_binds;
+            const end_bind = self.div_binds;
             var inner_buffer: [50]u8 = .{0} ** 50;
-
+            if (self.network_mode == NetworkDriveType.CLIENT_ONLY) return DriverError.SERVER_OFF;
             const net_type: []const u8 = switch (server_type) {
                 .SSL => "SSL",
                 .TCP => "TCP",
                 else => return DriverError.INVALID_ARGS,
             };
-
-            if (self.busy_flag) return DriverError.BUSY;
-
-            if (network_type == NetworkDriveType.CLIENT_ONLY) return DriverError.SERVER_OFF;
 
             _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}=1,{d},\"{s}\"{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER)], port, net_type, postfix }) catch return DriverError.INVALID_ARGS;
             self.event_aux_buffer.push(commands_enum.NETWORK_SERVER) catch return DriverError.TASK_BUFFER_FULL;
@@ -883,7 +888,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         //TODO: wait for commands respose for delete data from pool to avois deadlocks (also generate "SendDataFail" event for avoid memory leaks)
         pub fn delete_server(self: *Self) DriverError!void {
             var inner_buffer: [50]u8 = .{0} ** 50;
-            const end_bind = div_binds;
+            const end_bind = self.div_binds;
 
             //send close server command
             _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}=0,1{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER)], postfix }) catch unreachable;

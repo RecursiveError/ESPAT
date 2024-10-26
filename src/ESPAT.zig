@@ -578,30 +578,30 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         //TODO: clear all Network pkgs on connection close event
         //TODO: separe network event in two functions
         fn network_event(self: *Self, state: NetworkHandlerState, aux_buffer: []const u8) DriverError!void {
-            const id_index = std.mem.indexOf(u8, aux_buffer, ",");
-            if (id_index) |id| {
-                const index: usize = aux_buffer[id - 1] - '0';
-                if (index > self.Network_binds.len) return DriverError.INVALID_RESPONSE;
-
-                if (self.Network_binds[index]) |*bd| {
-                    bd.state = state;
-                    if (bd.event_callback) |callback| {
-                        const client_event: NetworkEvent = switch (state) {
-                            .Closed => NetworkEvent.Closed,
-                            .Connected => NetworkEvent.Connected,
-                            .None => return,
-                        };
-                        const client = Client{
-                            .id = @intCast(index),
-                            .event = client_event,
-                            .driver = self,
-                            .rev = null,
-                        };
-                        callback(client, bd.user_data);
-                    }
-                }
-            } else {
+            const id_index = aux_buffer[0];
+            if ((id_index < '0') or (id_index > '9')) {
                 return DriverError.INVALID_RESPONSE;
+            }
+
+            const index: usize = id_index - '0';
+            if (index > self.Network_binds.len) return DriverError.INVALID_RESPONSE;
+
+            if (self.Network_binds[index]) |*bd| {
+                bd.state = state;
+                if (bd.event_callback) |callback| {
+                    const client_event: NetworkEvent = switch (state) {
+                        .Closed => NetworkEvent.Closed,
+                        .Connected => NetworkEvent.Connected,
+                        .None => return,
+                    };
+                    const client = Client{
+                        .id = @intCast(index),
+                        .event = client_event,
+                        .driver = self,
+                        .rev = null,
+                    };
+                    callback(client, bd.user_data);
+                }
             }
         }
 

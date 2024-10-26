@@ -809,21 +809,20 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             self.network_mode = mode;
         }
 
-        pub fn bind(self: *Self, net_type: NetworkHandlerType, event_callback: ServerCallback, user_data: ?*anyopaque) DriverError!u8 {
+        pub fn bind(self: *Self, net_type: NetworkHandlerType, event_callback: ServerCallback, user_data: ?*anyopaque) DriverError!usize {
             const start_bind = self.div_binds;
 
             for (start_bind..self.Network_binds.len) |index| {
                 if (self.Network_binds[index]) |_| {
                     continue;
                 } else {
-                    const id: u8 = @intCast(index);
                     const new_bind: network_handler = .{
                         .NetworkHandlerType = net_type,
                         .event_callback = event_callback,
                         .user_data = user_data,
                     };
                     self.Network_binds[index] = new_bind;
-                    return id;
+                    return index;
                 }
             }
             return DriverError.MAX_BINDS;
@@ -875,12 +874,16 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer }) catch return DriverError.TX_BUFFER_FULL;
             for (0..end_bind) |id| {
                 self.Network_binds[id] = network_handler{
-                    .descriptor_id = @intCast(id),
                     .NetworkHandlerType = NetworkHandlerType.TCP,
                     .event_callback = event_callback,
                     .user_data = user_data,
                 };
             }
+        }
+
+        pub fn release(self: *Self, id: usize) DriverError!void {
+            if (id > self.Network_binds.len) return DriverError.INVALID_BIND;
+            self.Network_binds[id] = null;
         }
 
         //TODO: wait for commands respose for delete data from pool to avois deadlocks (also generate "SendDataFail" event for avoid memory leaks)
@@ -895,7 +898,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
             //clear all server binds
             for (0..end_bind) |id| {
-                self.Network_binds[id] = null;
+                self.release(id);
             }
 
             //clear all server pkgs

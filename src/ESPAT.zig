@@ -91,24 +91,31 @@ const prefix = "AT+";
 const infix = "_CUR";
 const postfix = "\r\n";
 
-//TODO: rework commands check for avoid errors like: "SEND OK == OK"
 pub const COMMANDS_RESPOSES_TOKENS = [_][]const u8{
-    "SEND", //send need to be check first due "SEND OK" response,
     "OK",
     "ERROR",
     "WIFI",
-    "CON",
-    "CLO",
+    ",CONNECT",
+    ",CLOSED",
+    "SEND",
     "ready",
 };
-pub const COMMAND_DATA_TYPES = [_][]const u8{ "IPD", "CIPSTA", "CWJAP", "STA" };
+
+pub const COMMAND_DATA_TYPES = [_][]const u8{
+    "+IPD",
+    "+CIPSTA",
+    "+CWJAP",
+    "+STA_CONNECTED",
+    "+DIST_STA_IP",
+    "+STA_DISCONNECTED",
+};
 
 pub const CommandResults = enum(u8) { Ok, Error };
 
 pub const WIFI_RESPOSE_TOKEN = [_][]const u8{
-    "DISC",
-    "CON",
-    "IP",
+    "DISCONNECT",
+    "CONNECTED",
+    "GOT IP",
 };
 
 pub const SEND_RESPONSE_TOKEN = [_][]const u8{
@@ -241,16 +248,33 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         on_STA_event: ?*const fn (event: WifiEvent, user_data: ?*anyopaque) void = null,
         on_AP_event: ?*const fn (event: WifiEvent, data: []u8, user_data: ?*anyopaque) void = null,
 
-        //TODO: parse commands and use HASH to compare
+        fn get_cmd_slice(buffer: []const u8, start_tokens: []const u8, end_tokens: []const u8) []const u8 {
+            var start: usize = 0;
+            for (0..buffer.len) |index| {
+                for (start_tokens) |token| {
+                    if (token == buffer[index]) {
+                        start = index;
+                        continue;
+                    }
+                }
+
+                for (end_tokens) |token| {
+                    if (token == buffer[index]) {
+                        return buffer[start..index];
+                    }
+                }
+            }
+            return buffer[start..];
+        }
+
         fn get_cmd_type(self: *Self, aux_buffer: []const u8) DriverError!void {
-            var result: ?usize = null;
+            const response = Self.get_cmd_slice(aux_buffer, &[_]u8{','}, &[_]u8{ ' ', '\r' });
+            var result: bool = false;
             const cmd_len = COMMANDS_RESPOSES_TOKENS.len;
-            for (0..cmd_len) |COMMAND| {
-                result = std.mem.indexOf(u8, aux_buffer, COMMANDS_RESPOSES_TOKENS[COMMAND]);
-                if (result) |_| {
-                    self.read_cmd_response(COMMAND, aux_buffer) catch |err| {
-                        return err;
-                    };
+            for (0..cmd_len) |cmd_id| {
+                result = std.mem.eql(u8, COMMANDS_RESPOSES_TOKENS[cmd_id], response);
+                if (result) {
+                    try self.read_cmd_response(cmd_id, aux_buffer);
                     break;
                 }
             }
@@ -259,22 +283,23 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         fn read_cmd_response(self: *Self, cmd_id: usize, aux_buffer: []const u8) DriverError!void {
             //TODO: change this
             switch (cmd_id) {
-                1 => try self.command_response(CommandResults.Ok),
-                2 => try self.command_response(CommandResults.Error),
-                3 => try self.wifi_response(aux_buffer),
-                4 => try self.network_event(NetworkHandlerState.Connected, aux_buffer),
-                5 => try self.network_event(NetworkHandlerState.Closed, aux_buffer),
-                0 => try self.network_send_event(aux_buffer), //TODO fix this after rework
+                0 => try self.ok_response(),
+                1 => try self.error_response(),
+                2 => try self.wifi_response(aux_buffer),
+                3 => try self.network_event(NetworkHandlerState.Connected, aux_buffer),
+                4 => try self.network_event(NetworkHandlerState.Closed, aux_buffer),
+                5 => try self.network_send_event(aux_buffer),
                 6 => self.busy_flag = false, //TODO: add timeout for ready state
                 else => return DriverError.INVALID_RESPONSE,
             }
         }
         fn get_cmd_data_type(self: *Self, aux_buffer: []const u8) DriverError!void {
-            var result: ?usize = null;
-            for (0..COMMAND_DATA_TYPES.len) |COMMAND| {
-                result = std.mem.indexOf(u8, aux_buffer, COMMAND_DATA_TYPES[COMMAND]);
-                if (result) |_| {
-                    try self.read_cmd_data(COMMAND, aux_buffer);
+            const response = Self.get_cmd_slice(aux_buffer, &[_]u8{}, &[_]u8{ ':', ',' });
+            var result: bool = false;
+            for (0..COMMAND_DATA_TYPES.len) |cmd_id| {
+                result = std.mem.eql(u8, response, COMMAND_DATA_TYPES[cmd_id]);
+                if (result) {
+                    try self.read_cmd_data(cmd_id, aux_buffer);
                     break;
                 }
             }
@@ -286,34 +311,62 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 0 => try self.parse_network_data(aux_buffer),
                 1 => try self.WiFi_get_AP_info(),
                 2 => try self.WiFi_error(),
-                3 => try self.WiFi_get_STA_info(aux_buffer),
+                3 => try self.WiFi_get_device_conn_mac(),
+                4 => try self.WiFi_get_device_ip(),
+                5 => try self.WiFi_get_device_disc_mac(),
                 else => {
                     return DriverError.INVALID_RESPONSE;
                 },
             }
         }
-        fn command_response(self: *Self, state: CommandResults) DriverError!void {
-            const cmd_result = self.event_aux_buffer.get() catch return DriverError.AUX_BUFFER_EMPTY;
-            //delete pkg if send fail
-            if (state == .Error) {
-                if (cmd_result == .NETWORK_SEND) {
-                    _ = self.Network_pool.get() catch return DriverError.NETWORK_BUFFER_EMPTY; //TODO: generate event "SendDataFail" to avoid memory leaks
-                    self.busy_flag = false;
-                }
+
+        fn ok_response(self: *Self) DriverError!void {
+            const cmd = self.event_aux_buffer.get() catch return DriverError.AUX_BUFFER_EMPTY;
+            //add custom handler here
+            switch (cmd) {
+                else => {},
             }
             if (self.on_cmd_response) |callback| {
-                callback(state, cmd_result, self.internal_user_data);
+                callback(.Ok, cmd, self.internal_user_data);
+            }
+        }
+
+        fn error_response(self: *Self) DriverError!void {
+            const cmd = self.event_aux_buffer.get() catch return DriverError.AUX_BUFFER_EMPTY;
+            switch (cmd) {
+                .NETWORK_SEND => {
+                    //clear current pkg on cipsend error (This happens only when a "CIPSEND" is sent to a client that is closed)
+                    const pkg = self.Network_pool.get() catch return DriverError.NETWORK_BUFFER_EMPTY;
+                    if (pkg.data) |to_free| {
+                        const client = Client{
+                            .driver = self,
+                            .event = .SendDataFail,
+                            .id = pkg.descriptor_id,
+                            .rev = to_free,
+                        };
+                        if (self.Network_binds[pkg.descriptor_id]) |*bd| {
+                            if (bd.event_callback) |callback| {
+                                callback(client, bd.user_data);
+                            }
+                        }
+                    }
+                    self.busy_flag = false;
+                },
+                else => {},
+            }
+            if (self.on_cmd_response) |callback| {
+                callback(.Error, cmd, self.internal_user_data);
             }
         }
 
         fn wifi_response(self: *Self, aux_buffer: []const u8) DriverError!void {
             var inner_buffer: [50]u8 = .{0} ** 50;
             var index: usize = 0;
-            var result: ?usize = null;
             var tx_event: ?WifiEvent = null;
+            const wifi_event_slice = get_cmd_slice(aux_buffer[5..], &[_]u8{}, &[_]u8{'\r'});
             for (WIFI_RESPOSE_TOKEN) |TOKEN| {
-                result = std.mem.indexOf(u8, aux_buffer, TOKEN);
-                if (result != null) {
+                const result = std.mem.eql(u8, wifi_event_slice, TOKEN);
+                if (result) {
                     break;
                 }
                 index += 1;
@@ -401,39 +454,32 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             }
         }
 
-        fn WiFi_get_STA_info(self: *Self, aux_buffer: []const u8) DriverError!void {
-            var result: ?usize = null;
+        fn WiFi_get_device_conn_mac(self: *Self) DriverError!void {
             var info_buf: [20]u8 = .{0} ** 20;
-            var sta_event = WifiEvent.WiFi_ERROR_UNKNOWN;
+            try self.get_STA_mac(&info_buf);
             if (self.on_AP_event) |callback| {
-                for (0..WIFI_RESPOSE_TOKEN.len) |index| {
-                    result = std.mem.indexOf(u8, aux_buffer, WIFI_RESPOSE_TOKEN[index]);
-                    if (result) |_| {
-                        switch (index) {
-                            0 => {
-                                try self.get_STA_mac(&info_buf);
-                                sta_event = .WiFi_STA_DISCONNECTED;
-                            },
-                            1 => {
-                                try self.get_STA_mac(&info_buf);
-                                sta_event = .WiFi_STA_CONNECTED;
-                            },
-                            2 => {
-                                try self.get_STA_ip(&info_buf);
-                                sta_event = .WIFi_STA_GOT_IP;
-                            },
-                            else => return DriverError.UNKNOWN_ERROR,
-                        }
-                        callback(sta_event, &info_buf, self.internal_user_data);
-                        return;
-                    }
-                }
+                callback(.WiFi_STA_CONNECTED, &info_buf, self.internal_user_data);
+            }
+        }
+        fn WiFi_get_device_ip(self: *Self) DriverError!void {
+            var info_buf: [20]u8 = .{0} ** 20;
+            try self.get_STA_ip(&info_buf);
+            if (self.on_AP_event) |callback| {
+                callback(.WIFi_STA_GOT_IP, &info_buf, self.internal_user_data);
+            }
+        }
+
+        fn WiFi_get_device_disc_mac(self: *Self) DriverError!void {
+            var info_buf: [20]u8 = .{0} ** 20;
+            try self.get_STA_mac(&info_buf);
+            if (self.on_AP_event) |callback| {
+                callback(.WiFi_STA_DISCONNECTED, &info_buf, self.internal_user_data);
             }
         }
 
         fn get_STA_mac(self: *Self, out_buf: []u8) DriverError!void {
             try self.wait_for_bytes(19);
-            var aux_buffer: Circular_buffer.create_buffer(u8, 50) = .{};
+            var aux_buffer: Circular_buffer.create_buffer(u8, 20) = .{};
             var data: u8 = 0;
             while (data != '\n') {
                 data = self.RX_buffer.get() catch {
@@ -448,7 +494,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         fn get_STA_ip(self: *Self, out_buf: []u8) DriverError!void {
             try self.wait_for_bytes(33);
-            var aux_buffer: Circular_buffer.create_buffer(u8, 50) = .{};
+            var aux_buffer: Circular_buffer.create_buffer(u8, 35) = .{};
             var data: u8 = 0;
             while (data != '\n') {
                 data = self.RX_buffer.get() catch {
@@ -561,13 +607,13 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         fn network_send_event(self: *Self, aux_buffer: []const u8) DriverError!void {
             self.busy_flag = false;
-            var result: ?usize = null;
+            const send_event_slice = get_cmd_slice(aux_buffer[5..], &[_]u8{}, &[_]u8{'\r'});
             for (0..SEND_RESPONSE_TOKEN.len) |index| {
-                result = std.mem.indexOf(u8, aux_buffer, SEND_RESPONSE_TOKEN[index]);
-                if (result) |_| {
+                const result = std.mem.eql(u8, send_event_slice, SEND_RESPONSE_TOKEN[index]);
+                if (result) {
                     try self.network_send_resposnse(index);
+                    return;
                 }
-                return;
             }
             return DriverError.INVALID_RESPONSE;
         }
@@ -614,6 +660,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         fn IDLE_REV(self: *Self) DriverError!void {
             var data: u8 = 0;
+            var index: usize = 0;
             var RX_aux_buffer: Circular_buffer.create_buffer(u8, 50) = .{};
             self.RX_callback_handler(&self.RX_buffer);
             while (true) {
@@ -621,22 +668,28 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 switch (data) {
                     '\n' => {
                         if (RX_aux_buffer.get_data_size() >= 3) {
-                            try self.get_cmd_type(RX_aux_buffer.raw_buffer());
+                            try self.get_cmd_type(RX_aux_buffer.raw_buffer()[0..index]);
                         }
                         RX_aux_buffer.clear();
+                        index = 0;
                         return;
                     },
                     ':' => {
-                        try self.get_cmd_data_type(RX_aux_buffer.raw_buffer());
+                        try self.get_cmd_data_type(RX_aux_buffer.raw_buffer()[0..index]);
                         RX_aux_buffer.clear();
+                        index = 0;
                         return;
                     },
                     '>' => {
                         try self.network_send_data();
                         RX_aux_buffer.clear();
+                        index = 0;
                         return;
                     },
-                    else => RX_aux_buffer.push_overwrite(data),
+                    else => {
+                        RX_aux_buffer.push_overwrite(data);
+                        index += 1;
+                    },
                 }
             }
         }

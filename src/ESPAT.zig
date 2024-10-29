@@ -170,10 +170,7 @@ pub const WiFistate = enum {
     CONNECTED,
 };
 
-pub const TXEventPkg = struct {
-    busy: bool = false,
-    cmd_data: [50]u8,
-};
+pub const TXEventPkg = struct { busy: bool = false, cmd_data: [50]u8, cmd_real_size: usize = 0 };
 
 //TODO: add more config (for all commands)
 //TODO: change "command_response(error)" to internal error handler with stacktrace
@@ -214,15 +211,13 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         };
 
         pub const NetworkPackage = struct { descriptor_id: u8 = 255, data: ?[]u8 = null };
-        const buffer_type = Circular_buffer.create_buffer(u8, RX_SIZE);
-        pub const RX_buffer_type = *buffer_type;
-        pub const TX_callback = *const fn (data: []const u8) void;
-        pub const RX_callback = *const fn (data: RX_buffer_type) void;
+        pub const TX_callback = *const fn (data: []const u8, user_data: ?*anyopaque) void;
+        pub const RX_callback = *const fn (free_data: usize, user_data: ?*anyopaque) []u8;
         const time_out = 5; //TODO: add user defined timeout in MS
 
         //internal control data, (Do not modify)
         TX_buffer: Circular_buffer.create_buffer(TXEventPkg, 25) = .{},
-        RX_buffer: buffer_type = .{},
+        RX_buffer: Circular_buffer.create_buffer(u8, RX_SIZE) = .{},
         TX_callback_handler: TX_callback,
         RX_callback_handler: RX_callback,
         event_aux_buffer: Circular_buffer.create_buffer(commands_enum, 25) = .{},
@@ -240,9 +235,18 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         //callback handlers
         //TODO: User event callbacks
+        TX_RX_user_data: ?*anyopaque = null,
         internal_user_data: ?*anyopaque = null,
         on_cmd_response: ?*const fn (result: CommandResults, cmd: commands_enum, user_data: ?*anyopaque) void = null,
         on_WiFi_event: ?*const fn (event: WifiEvent, data: ?[]const u8, user_data: ?*anyopaque) void = null,
+
+        fn get_data(self: *Self) void {
+            const free_space = self.RX_buffer.len - self.RX_buffer.get_data_size();
+            const data_slice = self.RX_callback_handler(free_space, self.TX_RX_user_data);
+            for (data_slice) |data| {
+                self.RX_buffer.push(data) catch return;
+            }
+        }
 
         fn get_cmd_slice(buffer: []const u8, start_tokens: []const u8, end_tokens: []const u8) []const u8 {
             var start: usize = 0;
@@ -486,7 +490,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             var time: usize = time_out;
             var RX_data_len = self.RX_buffer.get_data_size();
             while (time > 0) : (time -= 1) {
-                self.RX_callback_handler(&self.RX_buffer);
+                self.get_data();
                 RX_data_len = self.RX_buffer.get_data_size();
                 if (RX_data_len >= data_len) return;
             }
@@ -528,7 +532,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             var rev: [4096]u8 = .{0} ** 4096;
             while (remain > 0) {
                 data = self.RX_buffer.get() catch {
-                    self.RX_callback_handler(&self.RX_buffer);
+                    self.get_data();
                     continue;
                 };
                 rev[index] = data;
@@ -617,7 +621,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         fn network_send_data(self: *Self) DriverError!void {
             const pkg = self.Network_pool.peek_at(self.Network_pool.get_begin_index()) catch return DriverError.NETWORK_BUFFER_EMPTY;
             if (pkg.data) |data| {
-                self.TX_callback_handler(data);
+                self.TX_callback_handler(data, self.TX_RX_user_data);
             }
         }
 
@@ -637,7 +641,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             var data: u8 = 0;
             var index: usize = 0;
             var RX_aux_buffer: Circular_buffer.create_buffer(u8, 50) = .{};
-            self.RX_callback_handler(&self.RX_buffer);
+            self.get_data();
             while (true) {
                 data = self.RX_buffer.get() catch break;
                 switch (data) {
@@ -675,7 +679,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             }
             const next_cmd = self.TX_buffer.get() catch return;
             self.busy_flag = next_cmd.busy;
-            self.TX_callback_handler(&next_cmd.cmd_data);
+            self.TX_callback_handler(&next_cmd.cmd_data, self.TX_RX_user_data);
         }
 
         //TODO; make a event pool just to init commands

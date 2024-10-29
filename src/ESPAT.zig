@@ -164,13 +164,26 @@ pub const NetworkHandlerType = enum {
     SSL,
 };
 
+pub const NetworkPackage = struct { descriptor_id: u8 = 255, data: ?[]u8 = null };
+
 pub const WiFistate = enum {
     OFF,
     DISCONECTED,
     CONNECTED,
 };
 
-pub const TXEventPkg = struct { busy: bool = false, cmd_data: [50]u8, cmd_real_size: usize = 0 };
+pub const TXPkgType = enum { Command, Socket };
+pub const TXExtraData = union(TXPkgType) {
+    Command: struct {},
+    Socket: NetworkPackage,
+};
+
+pub const TXEventPkg = struct {
+    busy: bool = false,
+    cmd_data: [50]u8 = .{0} ** 50,
+    cmd_type: TXPkgType = .Command,
+    Extra_data: NetworkPackage = .{},
+};
 
 //TODO: add more config (for all commands)
 //TODO: change "command_response(error)" to internal error handler with stacktrace
@@ -210,12 +223,12 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             user_data: ?*anyopaque = null,
         };
 
-        pub const NetworkPackage = struct { descriptor_id: u8 = 255, data: ?[]u8 = null };
         pub const TX_callback = *const fn (data: []const u8, user_data: ?*anyopaque) void;
         pub const RX_callback = *const fn (free_data: usize, user_data: ?*anyopaque) []u8;
         const time_out = 5; //TODO: add user defined timeout in MS
 
         //internal control data, (Do not modify)
+        const TX_init: [25]TXEventPkg = .{} ** 25;
         TX_buffer: Circular_buffer.create_buffer(TXEventPkg, 25) = .{},
         RX_buffer: Circular_buffer.create_buffer(u8, RX_SIZE) = .{},
         TX_callback_handler: TX_callback,
@@ -231,7 +244,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         //network data
         Network_binds: [5]?network_handler = .{ null, null, null, null, null },
-        Network_pool: Circular_buffer.create_buffer(NetworkPackage, network_pool_size) = .{},
+        Network_corrent_pkg: NetworkPackage = .{},
 
         //callback handlers
         //TODO: User event callbacks
@@ -336,7 +349,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             switch (cmd) {
                 .NETWORK_SEND => {
                     //clear current pkg on cipsend error (This happens only when a "CIPSEND" is sent to a client that is closed)
-                    const pkg = self.Network_pool.get() catch return DriverError.NETWORK_BUFFER_EMPTY;
+                    const pkg = self.Network_corrent_pkg;
                     if (pkg.data) |to_free| {
                         const client = Client{
                             .driver = self,
@@ -598,7 +611,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         fn network_send_resposnse(self: *Self, response_id: usize) DriverError!void {
-            const to_free = self.Network_pool.get() catch return DriverError.NETWORK_BUFFER_EMPTY;
+            const to_free = self.Network_corrent_pkg;
             const pkg_id = to_free.descriptor_id;
             const event: NetworkEvent = switch (response_id) {
                 0 => NetworkEvent.SendDataComplete,
@@ -619,7 +632,8 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         }
 
         fn network_send_data(self: *Self) DriverError!void {
-            const pkg = self.Network_pool.peek_at(self.Network_pool.get_begin_index()) catch return DriverError.NETWORK_BUFFER_EMPTY;
+            const pkg = self.Network_corrent_pkg;
+            if (pkg.descriptor_id >= self.Network_binds.len) return DriverError.NETWORK_BUFFER_EMPTY;
             if (pkg.data) |data| {
                 self.TX_callback_handler(data, self.TX_RX_user_data);
             }
@@ -639,7 +653,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         fn IDLE_REV(self: *Self) DriverError!void {
             var data: u8 = 0;
-            var index: usize = 0;
+            var data_size: usize = 0;
             var RX_aux_buffer: Circular_buffer.create_buffer(u8, 50) = .{};
             self.get_data();
             while (true) {
@@ -647,27 +661,21 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 switch (data) {
                     '\n' => {
                         if (RX_aux_buffer.get_data_size() >= 3) {
-                            try self.get_cmd_type(RX_aux_buffer.raw_buffer()[0..index]);
+                            try self.get_cmd_type(RX_aux_buffer.raw_buffer()[0..data_size]);
                         }
                         RX_aux_buffer.clear();
-                        index = 0;
-                        return;
                     },
                     ':' => {
-                        try self.get_cmd_data_type(RX_aux_buffer.raw_buffer()[0..index]);
+                        try self.get_cmd_data_type(RX_aux_buffer.raw_buffer()[0..data_size]);
                         RX_aux_buffer.clear();
-                        index = 0;
-                        return;
                     },
                     '>' => {
                         try self.network_send_data();
                         RX_aux_buffer.clear();
-                        index = 0;
-                        return;
                     },
                     else => {
                         RX_aux_buffer.push_overwrite(data);
-                        index += 1;
+                        data_size = RX_aux_buffer.get_data_size();
                     },
                 }
             }
@@ -678,6 +686,9 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 return;
             }
             const next_cmd = self.TX_buffer.get() catch return;
+            if (next_cmd.cmd_type == .Socket) {
+                self.Network_corrent_pkg = next_cmd.Extra_data;
+            }
             self.busy_flag = next_cmd.busy;
             self.TX_callback_handler(&next_cmd.cmd_data, self.TX_RX_user_data);
         }
@@ -724,11 +735,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
 
         //TODO: send reaming network pkgs with "SendDataFail" event for avoid memory leaks
         pub fn deinit_driver(self: *Self) void {
-            while (true) {
-                _ = self.Network_pool.get() catch {
-                    break;
-                };
-            }
+            _ = self;
         }
 
         //TODO: deinit all data here
@@ -910,13 +917,9 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 .data = data,
                 .descriptor_id = id,
             };
-            self.Network_pool.push(pkg) catch {
-                return DriverError.NETWORK_BUFFER_FULL;
-            };
-
             _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}={d},{d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SEND)], id, data.len, postfix }) catch return DriverError.INVALID_ARGS;
             self.event_aux_buffer.push(commands_enum.NETWORK_SEND) catch return DriverError.TASK_BUFFER_FULL;
-            self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer, .busy = true }) catch return DriverError.TX_BUFFER_FULL;
+            self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer, .busy = true, .cmd_type = .Socket, .Extra_data = pkg }) catch return DriverError.TX_BUFFER_FULL;
         }
 
         //TODO: add more config param

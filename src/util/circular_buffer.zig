@@ -12,7 +12,7 @@ pub fn create_buffer(comptime buffer_type: type, comptime size: comptime_int) ty
     return struct {
         const Self = @This();
         const internal_size = size;
-        buffer: [size]buffer_type = std.mem.zeroes([size]buffer_type),
+        buffer: [size]buffer_type = undefined,
         len: usize = size,
         begin_index: usize = 0,
         end_index: usize = 0,
@@ -97,7 +97,6 @@ pub fn create_buffer(comptime buffer_type: type, comptime size: comptime_int) ty
         pub fn clear(self: *Self) void {
             self.begin_index = 0;
             self.end_index = 0;
-            self.buffer = std.mem.zeroes(@TypeOf(self.buffer));
         }
 
         pub fn raw_buffer(self: *Self) []buffer_type {

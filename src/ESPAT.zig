@@ -171,17 +171,17 @@ pub const BusyBitFlags = packed struct {
     Bluetooth: bool,
 };
 
+pub const WiFistate = enum {
+    OFF,
+    DISCONECTED,
+    CONNECTED,
+};
+
 pub const CommandPackage = struct { busy_flag: bool = false };
 pub const WiFiPackage = struct { ssid: []const u8, password: []const u8 };
 pub const NetworkPackage = struct { descriptor_id: u8 = 255, data: ?[]u8 = null };
 pub const BluetoothPackage = struct {
     //TODO
-};
-
-pub const WiFistate = enum {
-    OFF,
-    DISCONECTED,
-    CONNECTED,
 };
 
 pub const TXPkgType = enum { Command, Socket, WiFi, Bluetooth };
@@ -231,6 +231,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         pub const network_handler = struct {
             state: NetworkHandlerState = .None,
             NetworkHandlerType: NetworkHandlerType = .Default,
+            to_send: usize = 0,
             event_callback: ?ServerCallback = null,
             user_data: ?*anyopaque = null,
         };
@@ -315,8 +316,8 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
                 0 => try self.ok_response(),
                 1 => try self.error_response(),
                 2 => try self.wifi_response(aux_buffer),
-                3 => try self.network_event(NetworkHandlerState.Connected, aux_buffer),
-                4 => try self.network_event(NetworkHandlerState.Closed, aux_buffer),
+                3 => try self.network_conn_event(aux_buffer),
+                4 => try self.network_closed_event(aux_buffer),
                 5 => try self.network_send_event(aux_buffer),
                 6 => self.busy_flag.Command = false,
                 else => return DriverError.INVALID_RESPONSE,
@@ -583,10 +584,7 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             self.machine_state = Drive_states.IDLE;
         }
 
-        //TODO: ADD ERROR CHECK on invalid input
-        //TODO: clear all Network pkgs on connection close event
-        //TODO: separe network event in two functions
-        fn network_event(self: *Self, state: NetworkHandlerState, aux_buffer: []const u8) DriverError!void {
+        fn network_conn_event(self: *Self, aux_buffer: []const u8) DriverError!void {
             const id_index = aux_buffer[0];
             if ((id_index < '0') or (id_index > '9')) {
                 return DriverError.INVALID_RESPONSE;
@@ -596,20 +594,50 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             if (index > self.Network_binds.len) return DriverError.INVALID_RESPONSE;
 
             if (self.Network_binds[index]) |*bd| {
-                bd.state = state;
+                bd.state = .Connected;
                 if (bd.event_callback) |callback| {
-                    const client_event: NetworkEvent = switch (state) {
-                        .Closed => NetworkEvent.Closed,
-                        .Connected => NetworkEvent.Connected,
-                        .None => return,
-                    };
                     const client = Client{
                         .id = @intCast(index),
-                        .event = client_event,
+                        .event = NetworkEvent.Connected,
                         .driver = self,
                         .rev = null,
                     };
                     callback(client, bd.user_data);
+                }
+            }
+        }
+
+        fn network_closed_event(self: *Self, aux_buffer: []const u8) DriverError!void {
+            const id_index = aux_buffer[0];
+            if ((id_index < '0') or (id_index > '9')) {
+                return DriverError.INVALID_RESPONSE;
+            }
+
+            const index: usize = id_index - '0';
+            if (index > self.Network_binds.len) return DriverError.INVALID_RESPONSE;
+
+            if (self.Network_binds[index]) |*bd| {
+                bd.state = .Closed;
+                if (bd.event_callback) |callback| {
+                    const client = Client{
+                        .id = @intCast(index),
+                        .event = NetworkEvent.Closed,
+                        .driver = self,
+                        .rev = null,
+                    };
+                    callback(client, bd.user_data);
+                }
+
+                //clear all pkgs from the TX pool
+                for (0..bd.to_send) |_| {
+                    const TX_pkg = self.TX_buffer.get() catch return;
+                    switch (TX_pkg.Extra_data) {
+                        .Socket => |*net_pkg| {
+                            if (net_pkg.descriptor_id == index) continue;
+                            self.TX_buffer.push(TX_pkg) catch unreachable;
+                        },
+                        else => self.TX_buffer.push(TX_pkg) catch unreachable,
+                    }
                 }
             }
         }
@@ -653,6 +681,9 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
             if (pkg.descriptor_id >= self.Network_binds.len) return DriverError.NETWORK_BUFFER_EMPTY;
             if (pkg.data) |data| {
                 self.TX_callback_handler(data, self.TX_RX_user_data);
+            }
+            if (self.Network_binds[pkg.descriptor_id]) |*bd| {
+                bd.to_send -= 1;
             }
         }
 
@@ -944,18 +975,25 @@ pub fn create_drive(comptime RX_SIZE: comptime_int, comptime network_pool_size: 
         //TODO: break data bigger than 2048 into multi 2048 pkgs
         //TODO: delete events from pool in case of erros
         pub fn send(self: *Self, id: u8, data: []u8) DriverError!void {
+            if (id >= self.Network_binds.len) return DriverError.INVALID_ARGS;
             const free_events = self.event_aux_buffer.len - self.event_aux_buffer.get_data_size();
             const free_TX_cmd = self.TX_buffer.len - self.TX_buffer.get_data_size();
             if ((free_events < 4) or (free_TX_cmd < 2)) return DriverError.BUSY; //keep some space to other commands
             var inner_buffer: [50]u8 = .{0} ** 50;
-
-            const pkg = NetworkPackage{
-                .data = data,
-                .descriptor_id = id,
-            };
-            _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}={d},{d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SEND)], id, data.len, postfix }) catch return DriverError.INVALID_ARGS;
-            self.event_aux_buffer.push(commands_enum.NETWORK_SEND) catch return DriverError.TASK_BUFFER_FULL;
-            self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer, .Extra_data = .{ .Socket = pkg } }) catch return DriverError.TX_BUFFER_FULL;
+            if (self.Network_binds[id]) |*bd| {
+                if (bd.state == .Connected) {
+                    const pkg = NetworkPackage{
+                        .data = data,
+                        .descriptor_id = id,
+                    };
+                    _ = std.fmt.bufPrint(&inner_buffer, "{s}{s}={d},{d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SEND)], id, data.len, postfix }) catch return DriverError.INVALID_ARGS;
+                    self.event_aux_buffer.push(commands_enum.NETWORK_SEND) catch return DriverError.TASK_BUFFER_FULL;
+                    self.TX_buffer.push(TXEventPkg{ .cmd_data = inner_buffer, .Extra_data = .{ .Socket = pkg } }) catch return DriverError.TX_BUFFER_FULL;
+                    bd.to_send += 1;
+                    return;
+                }
+            }
+            return DriverError.INVALID_BIND;
         }
 
         //TODO: add more config param

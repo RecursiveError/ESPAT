@@ -1,7 +1,9 @@
 .{
     .name = "ESPAT",
-    .version = "0.0.1-alpha",
-    .dependencies = .{},
+    .version = "0.1.0",
+    .dependencies = .{
+        .ESPAT = .{},
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

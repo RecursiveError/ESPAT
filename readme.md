@@ -130,6 +130,7 @@ simply pass the function to the `on_WiFi_event` attribute to handle WiFi events.
 
 to add user parameters, pass a reference from the data to the `internal_user_data` attribute (Note: this parameter is shared across all Driver event callbacks).
 
+TODO: WiFi events Doc
 
 
 ### Basic network

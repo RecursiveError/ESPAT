@@ -15,10 +15,8 @@ fn rx_callback(free_size: usize, user_data: ?*anyopaque) []u8 {
             const b = serial.reader().readByte() catch break;
             rv_internal_buf[size] = b;
             size += 1;
-            if (b == 0) _ = std.log.info("here", .{});
             if (b == '\n' or b == '>') break;
         }
-        _ = std.log.info("RX got {s}", .{rv_internal_buf[0..size]});
         return rv_internal_buf[0..size];
     }
     _ = std.log.info("null args on RX", .{});
@@ -29,21 +27,14 @@ fn rx_callback(free_size: usize, user_data: ?*anyopaque) []u8 {
 fn TX_callback(data: []const u8, user_data: ?*anyopaque) void {
     if (user_data) |userdata| {
         const serial: *std.fs.File = @ptrCast(@alignCast(userdata));
-        var end: usize = data.len;
-        for (0..data.len) |index| {
-            if (data[index] == 0) {
-                end = index;
-                break;
-            }
-        }
-        _ = std.log.info("TX Send  {s}", .{data[0..end]});
-        serial.writer().writeAll(data[0..end]) catch return;
+        _ = std.log.info("TX Send  {s} | bytes {}", .{ data, data.len });
+        serial.writer().writeAll(data) catch return;
     }
 }
 
-const ATdrive = ESP_AT.create_drive(4096, 10);
+const ATdrive = ESP_AT.EspAT(4096, 20);
 const wifi_ssid = "SSID";
-const wifi_password = "pwd";
+const wifi_password = "PASSWORD";
 const server_port: u16 = 1234;
 
 fn result_callback(result: ESP_AT.CommandResults, cmd: ESP_AT.commands_enum, user_data: ?*anyopaque) void {
@@ -74,7 +65,7 @@ fn device_callback(event: ESP_AT.WifiEvent, data: ?[]const u8, user_data: ?*anyo
             }
         },
         else => {
-            std.debug.print("event {} data {any}", .{ event, data });
+            std.log.info("event {} data {any}", .{ event, data });
         },
     }
 }
@@ -93,6 +84,28 @@ fn server_callback(client: ATdrive.Client, user_data: ?*anyopaque) void {
             client.send(@constCast(html)) catch |err| {
                 _ = std.log.info("SERVER: got error {}, on bind {}", .{ err, client.id });
             };
+            client.close() catch |err| {
+                _ = std.log.info("SERVER: close got error {}", .{err});
+            };
+        },
+        .SendDataComplete => {},
+        .SendDataFail => {},
+    }
+}
+
+fn client_callback(client: ATdrive.Client, user_data: ?*anyopaque) void {
+    _ = user_data;
+    switch (client.event) {
+        .Connected => {
+            client.send("teste\r\n") catch |err| {
+                _ = std.log.info("SERVER: got error {}, on bind {}", .{ err, client.id });
+            };
+        },
+        .Closed => {},
+        .ReciveData => {
+            if (client.rev) |data| {
+                _ = std.log.info("server got {s}", .{data});
+            }
             client.close() catch |err| {
                 _ = std.log.info("SERVER: close got error {}", .{err});
             };
@@ -126,20 +139,21 @@ pub fn main() !void {
     defer serial.close();
 
     try zig_serial.configureSerialPort(serial, zig_serial.SerialConfig{
-        .baud_rate = 115200,
+        .baud_rate = 115273,
         .word_size = .eight,
         .parity = .none,
         .stop_bits = .one,
         .handshake = .none,
     });
-    var my_drive = ATdrive.new(TX_callback, rx_callback);
+    var my_drive = ATdrive.init(TX_callback, rx_callback);
+    std.log.info("DRIVER MEM: {}", .{@sizeOf(@TypeOf(my_drive))});
     my_drive.on_WiFi_event = device_callback;
     my_drive.on_cmd_response = result_callback;
     my_drive.TX_RX_user_data = &serial;
     defer my_drive.deinit_driver();
     try my_drive.init_driver();
     try my_drive.set_WiFi_mode(ESP_AT.WiFiDriverMode.AP_STA);
-    try my_drive.set_network_mode(ESP_AT.NetworkDriveMode.SERVER_ONLY);
+    try my_drive.set_network_mode(ESP_AT.NetworkDriveMode.SERVER_CLIENT);
     my_drive.WiFi_config_AP(AP_config) catch |err| {
         _ = std.log.info("AP conf got error: {}", .{err});
     };
@@ -147,20 +161,27 @@ pub fn main() !void {
     my_drive.create_server(server_port, ESP_AT.NetworkHandlerType.Default, server_callback, null) catch |Err| {
         _ = std.log.info("server create fail: {}", .{Err});
     };
+    const config = ESP_AT.NetworkConnectPkg{
+        .remote_host = "google.com",
+        .remote_port = 80,
+        .config = .{
+            .tcp = .{
+                .keep_alive = 0,
+            },
+        },
+    };
+    const id = try my_drive.bind(client_callback, null);
+    try my_drive.connect(id, config);
     while (my_drive.Wifi_state != .CONNECTED) {
         my_drive.process() catch |err| {
             _ = std.log.info("Driver got error: {}", .{err});
-            _ = std.log.info("here", .{});
         };
-        std.time.sleep(std.time.ns_per_ms * 20);
     }
     _ = std.log.info("sERVER OPEN ON {}", .{server_port});
     while (true) {
         my_drive.process() catch |err| {
-            _ = std.log.info("Driver got error: {}", .{err});
+            _ = std.log.err("Driver got error: {}", .{err});
         };
-        std.time.sleep(std.time.ns_per_ms * 20);
     }
 }
-
 ```

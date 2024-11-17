@@ -283,11 +283,11 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
         pub const network_handler = struct {
             state: NetworkHandlerState = .None,
             to_send: usize = 0,
-            event_callback: ?ServerCallback = null,
+            event_callback: ?ClientCallback = null,
             user_data: ?*anyopaque = null,
         };
 
-        const ServerCallback = *const fn (client: Client, user_data: ?*anyopaque) void;
+        const ClientCallback = *const fn (client: Client, user_data: ?*anyopaque) void;
         pub const TX_callback = *const fn (data: []const u8, user_data: ?*anyopaque) void;
         pub const RX_callback = *const fn (free_data: usize, user_data: ?*anyopaque) []u8;
 
@@ -1027,7 +1027,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             self.network_mode = mode;
         }
 
-        pub fn bind(self: *Self, event_callback: ServerCallback, user_data: ?*anyopaque) DriverError!usize {
+        pub fn bind(self: *Self, event_callback: ClientCallback, user_data: ?*anyopaque) DriverError!usize {
             const start_bind = self.div_binds;
 
             for (start_bind..self.Network_binds.len) |index| {
@@ -1097,7 +1097,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             } }) catch return DriverError.TX_BUFFER_FULL;
         }
 
-        pub fn create_server(self: *Self, port: u16, server_type: NetworkHandlerType, event_callback: ServerCallback, user_data: ?*anyopaque) DriverError!void {
+        pub fn create_server(self: *Self, port: u16, server_type: NetworkHandlerType, event_callback: ClientCallback, user_data: ?*anyopaque) DriverError!void {
             const end_bind = self.div_binds;
             var inner_buffer: [50]u8 = .{0} ** 50;
             var cmd_slice: []const u8 = undefined;

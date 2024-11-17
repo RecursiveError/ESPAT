@@ -33,6 +33,7 @@ Features that may be implemented
 
 - [Porting](#porting)
 - [WiFi setup](#basic-wifi-config)
+- [WiFi Events](#wifi-events)
 - [Network Setup](#basic-network)
 - [Error Handling](#error-handling)
 
@@ -108,7 +109,7 @@ TODO: microzig port  example
 
 ### Basic WiFi config
 
-Before using any WiFi-related function, it is necessary to set the WiFi mode.
+Before using any WiFi-related function, it is necessary to set the WiFi mode using the function: `set_WiFi_mode(mode: WiFiDriverMode)`
 
 ESPAT has 3 WiFi modes:   
 - WiFiDriverMode.AP: to configure the module as an access point.  
@@ -117,10 +118,19 @@ ESPAT has 3 WiFi modes:
 
 the WiFi mode can be changed at any time, but keep in mind that the module will not automatically connect to the WiFi after the AP mode is changed to STA (this is not a hardware or driver limitation, it is just a default setting, it can be changed in the future according to user feedback)
 
-TODO: configure AP doc  
-TODO: configure: STA doc
+Setting up the module as an access point: With WiFi configured for AP or AP_STA mode , create a configuration struct: `WiFiAPConfig`
+the fields in this struct correspond directly to the settings of the AT commands. [soft AP parameters](https://docs.espressif.com/projects/esp-at/en/release-v4.0.0.0/esp32/AT_Command_Set/Wi-Fi_AT_Commands.html#id28)
 
-all WiFi events are received by a callback: 
+To save the settings and enable SoftAP mode, pass the configuration struct to the function: `WiFi_config_AP(config: WiFiAPConfig)`
+
+Setting up the module as a station: With WiFi configured for STA or AP_STA mode , create a configuration struct: `WiFiSTAConfig`
+the fields in this struct correspond directly to the settings of the AT commands. [STA parameters](https://docs.espressif.com/projects/esp-at/en/release-v4.0.0.0/esp32/AT_Command_Set/Wi-Fi_AT_Commands.html#id11)
+
+To save the settings and enable STA mode, pass the configuration struct to the function: `WiFi_connect_AP(config: WiFiSTAConfig)`
+
+### WiFi events
+
+All WiFi events are handled through a callback:
 `fn on_WiFi_event(event: WifiEvent, data: ?[]const u8, user_data: ?*anyopaque) void`:
 - `event`: enum of WiFi events
 - `data`: some WiFi events may return additional data
@@ -130,7 +140,25 @@ simply pass the function to the `on_WiFi_event` attribute to handle WiFi events.
 
 to add user parameters, pass a reference from the data to the `internal_user_data` attribute (Note: this parameter is shared across all Driver event callbacks).
 
-TODO: WiFi events Doc
+WiFi event table
+
+| **EVENT**   | **return data** | **Info**        |
+|------------|-------------|------------------------|
+|WiFi_AP_CON_START|❌|WiFi has started a connection attempt.|
+|WiFi_AP_CONNECTED|❌|WiFi connected to an access point, waiting for IP.|
+|WiFi_AP_GOT_MASK|✅|WiFi received the network mask from the Access Point, returns a string with the network mask.|
+|WiFi_AP_GOT_IP|✅|WiFi received an IP from the Access point, returns a string with the IP.|
+|WiFi_AP_GOT_GATEWAY|✅|WiFi received the gateway IP of the Access point, returns a string with the gateway IP.|
+|WiFi_AP_DISCONNECTED|❌|WiFi disconnected from an access point.|
+|WiFi_STA_CONNECTED|✅|A device has connected to the module's access point. returns the MAC address of the device.|
+|WIFi_STA_GOT_IP|✅|a device has been assigned an IP address from the module, returns the IP address of the device.|
+|WiFi_STA_DISCONNECTED|✅| a device disconnected from the module's access point, returns the device's MAC address.|
+|WiFi_ERROR_TIMEOUT|❌|Connection to an access point took too long to respond.|
+|WiFi_ERROR_PASSWORD|❌|Incorrect WiFi password.|
+|WiFi_ERROR_INVALID_SSID|❌|The module was not able to find the specified SSID.|
+|WiFi_ERROR_CONN_FAIL|❌|The access point refused the connection.|
+|WiFi_ERROR_UNKNOWN|❌|The module returned an unknown error code.|
+
 
 
 ### Basic network

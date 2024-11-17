@@ -1127,6 +1127,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
 
             self.TX_fifo.writeItem(TXEventPkg{ .cmd_data = inner_buffer, .cmd_len = slice_len, .cmd_enum = .NETWORK_SERVER }) catch return DriverError.TX_BUFFER_FULL;
             for (0..end_bind) |id| {
+                try self.release(id);
                 self.Network_binds[id] = network_handler{
                     .event_callback = event_callback,
                     .user_data = user_data,

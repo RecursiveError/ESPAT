@@ -1011,21 +1011,18 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             self.Wifi_mode = mode;
         }
         pub fn set_network_mode(self: *Self, mode: NetworkDriveMode) !void {
-            var inner_buffer: [50]u8 = .{0} ** 50;
-            var cmd_slice: []const u8 = undefined;
-            var cmd_size: usize = 0;
-            if (mode == .SERVER_CLIENT) {
-                //configure server to MAX connections to 3
-                cmd_slice = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=3{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER_CONF)], postfix });
-                cmd_size = cmd_slice.len;
-                try self.TX_fifo.writeItem(TXEventPkg{ .cmd_data = inner_buffer, .cmd_len = cmd_size, .cmd_enum = .NETWORK_SERVER_CONF });
-            }
-
             self.div_binds = switch (mode) {
                 .CLIENT_ONLY => 0,
                 .SERVER_ONLY => 5,
                 .SERVER_CLIENT => 3,
             };
+            var inner_buffer: [50]u8 = .{0} ** 50;
+            var cmd_slice: []const u8 = undefined;
+            var cmd_size: usize = 0;
+            //configure server to MAX connections
+            cmd_slice = try std.fmt.bufPrint(&inner_buffer, "{s}{s}={d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER_CONF)], self.div_binds, postfix });
+            cmd_size = cmd_slice.len;
+            try self.TX_fifo.writeItem(TXEventPkg{ .cmd_data = inner_buffer, .cmd_len = cmd_size, .cmd_enum = .NETWORK_SERVER_CONF });
 
             self.network_mode = mode;
         }

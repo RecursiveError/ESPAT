@@ -8,7 +8,7 @@ AT command firmware for ESP modules (32/8266) is a simple and inexpensive way to
 __Minimum Espressif AT Firmware Version__: 2.2.0.0
 
 **Warning**: for Ai-thinker modules such as ESP-01 or ESP-12.
-Boantong AT firmware (AT =< 1.7) is not supported, and Espressif firmware (2.2.0.0) is not compatible with the pin layout of these boards, to use them it is necessary to customize the firmware to ESP8266, if you don't know how to do this follow this guide: (TODO: firmware guide)
+Boantong AT firmware (AT =< 1.7) is not supported, and Espressif firmware (2.2.0.0) is not compatible with the pin layout of these boards, to use them it is necessary to customize the firmware to ESP8266, if you don't know how to do this follow this guide: [custom pin AT](docs/customAT.md)
 
 ## Supported Features
 - [x] WiFi STA/AP/AP+STA modes
@@ -242,3 +242,5 @@ The Struct Client contains all the information needed to manage the connection:
 ### Error Handling
 TODO
 
+
+complete example code: [Generic port](docs/generic_port.md)

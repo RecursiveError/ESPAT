@@ -7,8 +7,8 @@ AT command firmware for ESP modules (32/8266) is a simple and inexpensive way to
 
 __Minimum Espressif AT Firmware Version__: 2.2.0.0
 
-**Warning**: for Ai-thinker modules such as ESP-01 or ESP-12E.
-Boantong AT (BAT) firmware is not supported, and Espressif firmare is not compatible with the pin layout of these boards, to use them it is necessary to customize the firmware to ESP8266, if you don't know how to do this follow this guide: (TODO: firmware guide)
+**Warning**: for Ai-thinker modules such as ESP-01 or ESP-12.
+Boantong AT firmware (AT =< 1.7) is not supported, and Espressif firmware (2.2.0.0) is not compatible with the pin layout of these boards, to use them it is necessary to customize the firmware to ESP8266, if you don't know how to do this follow this guide: (TODO: firmware guide)
 
 ## Supported Features
 - [x] WiFi STA/AP/AP+STA modes
@@ -33,8 +33,11 @@ Features that may be implemented
 
 - [Porting](#porting)
 - [WiFi setup](#basic-wifi-config)
-- [WiFi Events](#wifi-events)
+    - [WiFi Events](#wifi-events)
 - [Network Setup](#basic-network)
+    - [Clients](#client)
+    - [Server](#server)
+    - [Network Events](#network-events)
 - [Error Handling](#error-handling)
 
 ### Porting
@@ -162,9 +165,79 @@ WiFi event table
 
 
 ### Basic network
-TODO: TCP/UDP/SSL client Doc  
-TODO: TCP/UDP/SSL server Doc  
-TODO: TCP/UDP/SSL client AND server coexistence Doc
+
+Before using any network-related function, it is necessary to set the network mode by the function: `set_network_mode(mode: NetworkDriveMode)`
+
+By default the module has a total of 5 Sockets, which can be divided between client and server, the network modes define how this division will be done.
+
+
+| **NetworkDriveMode**   | **Client connections** | **Server connections**|
+|-------------|-----------------|------------------|
+| .CLIENT_ONLY|5|0|
+| .SERVER_ONLY|0|5|
+| .SERVER_CLIENT|2|3|
+
+(This may change in the future, allowing the user to configure the division.)
+
+You can change the network mode at any time, but this may have some side effects:
+
+- Clients: Decreasing the number of client connections will immediately delete the associated handler for the connection, causing data loss. Make sure that all client connections have been terminated.
+
+- Server: Decreasing the number of server connections will only take effect when the server is deleted.
+
+#### Client
+To start a client the first thing you should do is get a Socket ID by the function: `bind(event_callback: ClientCallback, user_data: ?*anyopaque)`
+
+this function is assigned a ClientCallback and an optional user-defined parameter (each ID can have its own callback and parameter).
+
+if a client socket is available, this function will associate the callback and the user's parameter with that socket and return the ID.
+
+to make a request you must create a configuration struct:`NetworkConnectPkg`
+
+This struct gets:
+- remote_host = a string containing the IP or domain of the host
+- remote_port = the host port
+- config = Request type configuration:
+    - TCP/SSL:
+        - keep_alive = keep-alive timeout
+    - udp:
+        - local_port = optional local port 
+        mode = udp mode [(refer to ESPAT Doc)](https://docs.espressif.com/projects/esp-at/en/release-v4.0.0.0/esp32/AT_Command_Set/TCP-IP_AT_Commands.html#id11)
+
+With this struct configured, call the function: `connect(id: usize, config: NetworkConnectPkg)` passing the id and the configuration.
+now all communication will happen through the callback associated with the socket. [Network events](#network-events)
+
+To return a socket, use the function: `release(id: usize)`, this function will clear all data associated with the Socket and return the ID to the list of available Sockets
+ 
+#### Server
+
+To create a server call function: `create_server(port: u16, server_type: NetworkHandlerType, event_callback: ClientCallback, user_data: ?*anyopaque)` passing
+- port = the port that the server will listen on
+- server_type = the type of server, servers can be of 3 types: `.default` (default firmware configuration), `.TCP` and `.SSL`.
+
+- event_callback and user_data = a Clientcallback is an optional user parameter, all server connections will share the same callback and parameters.
+
+all communication will happen through the event_callback. [Network events](#network-events)
+
+**Note**: ESPAT only supports listening on one port at a time.
+To delete the server use the function: `delete_server()`
+
+#### Network Events
+both clients and servers use ClientCallbacks for communication, a ClientCallback is just: `(client: EspAT(rx_size,tx_size).Client, user_data: ?*anyopaque) void`
+
+The Struct Client contains all the information needed to manage the connection:
+- `id` = the connection ID
+- `event` = the current NetworkEvent of the connection,these NetworkEvent can be:
+    - `.Connected`: the current ID initiated a connection.
+    - `.Closed`: the current ID closed the connection
+    - `.ReciveData`: the current ID received data, this data is available in `rev`. (**Note**:data can be received in multiple packets, due to the behavior of ESPAT)
+    - `.SendDataComplete`: the current ID sent data successfully, returns the data sent in `rev`.
+    - `.SendDataFail`: the current ID failed to send data, returns the data sent in `rev`.
+- `rev` = optional event data
+- `close()` = function to close the connection
+- `send()` = function to send data. (**Note**: the data should live until it is returned by events: `.SendDataComplete` and  `.SendDataFail` ).
+
+
 
 ### Error Handling
 TODO

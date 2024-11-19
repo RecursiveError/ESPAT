@@ -809,21 +809,25 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             self.get_data();
             const fifo_size = self.RX_fifo.readableLength();
             for (0..fifo_size) |_| {
-                const data = self.RX_fifo.readItem().?;
-                self.cmd_recive_buf[self.cmd_recive_buf_pos] = data;
-                self.cmd_recive_buf_pos = (self.cmd_recive_buf_pos + 1) % self.cmd_recive_buf.len;
-                if (data == '\n') {
-                    if (self.cmd_recive_buf_pos > 3) {
-                        if (self.cmd_recive_buf[0] == '+') {
-                            try self.get_cmd_data_type(self.cmd_recive_buf[0..self.cmd_recive_buf_pos]);
-                        } else {
-                            try self.get_cmd_type(self.cmd_recive_buf[0..self.cmd_recive_buf_pos]);
+                const rev_data = self.RX_fifo.readItem();
+                if (rev_data) |data| {
+                    self.cmd_recive_buf[self.cmd_recive_buf_pos] = data;
+                    self.cmd_recive_buf_pos = (self.cmd_recive_buf_pos + 1) % self.cmd_recive_buf.len;
+                    if (data == '\n') {
+                        if (self.cmd_recive_buf_pos > 3) {
+                            if (self.cmd_recive_buf[0] == '+') {
+                                try self.get_cmd_data_type(self.cmd_recive_buf[0..self.cmd_recive_buf_pos]);
+                            } else {
+                                try self.get_cmd_type(self.cmd_recive_buf[0..self.cmd_recive_buf_pos]);
+                            }
                         }
+                        self.cmd_recive_buf_pos = 0;
+                    } else if (data == '>') {
+                        try self.network_send_data();
+                        self.cmd_recive_buf_pos = 0;
                     }
-                    self.cmd_recive_buf_pos = 0;
-                } else if (data == '>') {
-                    try self.network_send_data();
-                    self.cmd_recive_buf_pos = 0;
+                } else {
+                    break;
                 }
             }
         }

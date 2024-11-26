@@ -57,10 +57,12 @@ pub const commands_enum = enum(u8) {
     RESET,
     ECHO_OFF,
     ECHO_ON,
+    SYSSTORE,
     IP_MUX,
     WIFI_SET_MODE,
     WIFI_CONNECT,
     WIFI_CONF,
+    WIFI_DISCONNECT,
     WIFI_AUTOCONN,
     NETWORK_CONNECT,
     NETWORK_SEND,
@@ -78,10 +80,12 @@ pub const COMMANDS_TOKENS = [_][]const u8{
     "RST",
     "ATE0",
     "ATE1",
+    "SYSSTORE",
     "CIPMUX",
     "CWMODE",
     "CWJAP",
     "CWSAP",
+    "CWQAP",
     "CWAUTOCONN",
     "CIPSTART",
     "CIPSEND",
@@ -929,6 +933,11 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             cmd_size = cmd_slice.len;
             try self.TX_fifo.writeItem(TXEventPkg{ .cmd_data = inner_buffer, .cmd_len = cmd_size, .cmd_enum = .ECHO_OFF });
 
+            //disable sysstore
+            cmd_slice = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=0{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.SYSSTORE)], postfix });
+            cmd_size = cmd_slice.len;
+            try self.TX_fifo.writeItem(TXEventPkg{ .cmd_data = inner_buffer, .cmd_len = cmd_size, .cmd_enum = .SYSSTORE });
+
             //enable multi-conn
             cmd_slice = try std.fmt.bufPrint(&inner_buffer, "{s}{s}=1{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.IP_MUX)], postfix });
             cmd_size = cmd_slice.len;
@@ -1013,6 +1022,13 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             cmd_size = cmd_slice.len;
             try self.TX_fifo.writeItem(TXEventPkg{ .cmd_data = inner_buffer, .cmd_len = cmd_size, .cmd_enum = .WIFI_SET_MODE });
             self.Wifi_mode = mode;
+        }
+
+        pub fn WiFi_disconnect(self: *Self) DriverError!void {
+            var inner_buffer: [50]u8 = .{0} ** 50;
+            const cmd_slice = try std.fmt.bufPrint(&inner_buffer, "{s}{s}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_DISCONNECT)], postfix });
+            const cmd_size = cmd_slice.len;
+            try self.TX_fifo.writeItem(TXEventPkg{ .cmd_data = inner_buffer, .cmd_len = cmd_size, .cmd_enum = .WIFI_DISCONNECT });
         }
         pub fn set_network_mode(self: *Self, mode: NetworkDriveMode) !void {
             self.div_binds = switch (mode) {

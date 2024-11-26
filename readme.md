@@ -163,6 +163,9 @@ WiFi event table
 |WiFi_ERROR_UNKNOWN|❌|The module returned an unknown error code.|
 
 
+To disconnect from WiFi, use: `WiFi_disconnect()`
+
+(note: you don't need to use this function to switch WiFi networks)
 
 ### Basic network
 

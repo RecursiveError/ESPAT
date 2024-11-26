@@ -8,4 +8,4 @@ To create a modified version of the firmware with custom pins, just follow these
 
 4. Send the generated binary to the board.
 
-That's enough to have version 2.2.0.0 running on third-party cards based on the ESP8266 :)
+That's enough to have version 2.2.0.0 running on third-party boards based on the ESP8266 :)

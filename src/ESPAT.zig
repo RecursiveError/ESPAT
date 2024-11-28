@@ -93,6 +93,10 @@ pub const COMMANDS_TOKENS = [_][]const u8{
     "CIPSERVER",
 };
 
+pub inline fn get_cmd_string(cmd: commands_enum) []const u8 {
+    return COMMANDS_TOKENS[@intFromEnum(cmd)];
+}
+
 const prefix = "AT+";
 const infix = "_CUR";
 const postfix = "\r\n";
@@ -259,6 +263,11 @@ const NetworkToSend = struct {
     data: ?[]const u8 = null,
 };
 
+pub const TX_callback = *const fn (data: []const u8, user_data: ?*anyopaque) void;
+pub const RX_callback = ?*const fn (free_data: usize, user_data: ?*anyopaque) []u8;
+pub const WIFI_event_type = ?*const fn (event: WifiEvent, data: ?[]const u8, user_data: ?*anyopaque) void;
+pub const response_event_type = ?*const fn (result: CommandResults, cmd: commands_enum, user_data: ?*anyopaque) void;
+
 pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_int) type {
     if (RX_SIZE <= 50) @compileError("RX SIZE CANNOT BE LESS THAN 50 byte");
     if (TX_event_pool <= 5) @compileError(" NETWORK POOL SIZE CANNOT BE LESS THAN 5 events"); //
@@ -288,12 +297,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             event_callback: ?ClientCallback = null,
             user_data: ?*anyopaque = null,
         };
-
         const ClientCallback = *const fn (client: Client, user_data: ?*anyopaque) void;
-        pub const TX_callback = *const fn (data: []const u8, user_data: ?*anyopaque) void;
-        pub const RX_callback = *const fn (free_data: usize, user_data: ?*anyopaque) []u8;
-
-        const time_out = 5;
         const CMD_CALLBACK_TYPE = *const fn (self: *Self, aux_buffer: []const u8) DriverError!void;
         const cmd_response_map = std.StaticStringMap(CMD_CALLBACK_TYPE).initComptime(.{
             .{ "OK", Self.ok_response },
@@ -340,19 +344,26 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
         Network_corrent_pkg: NetworkToSend = .{},
 
         //callback handlers
+
         TX_RX_user_data: ?*anyopaque = null,
-        internal_user_data: ?*anyopaque = null,
-        on_cmd_response: ?*const fn (result: CommandResults, cmd: commands_enum, user_data: ?*anyopaque) void = null,
-        on_WiFi_event: ?*const fn (event: WifiEvent, data: ?[]const u8, user_data: ?*anyopaque) void = null,
+        WiFi_user_data: ?*anyopaque = null,
+        Error_handler_user_data: ?*anyopaque = null,
+        on_cmd_response: response_event_type = null,
+        on_WiFi_event: WIFI_event_type = null,
+        pub inline fn get_rx_free_space(self: *Self) usize {
+            return self.RX_fifo.writableLength();
+        }
+
         fn get_data(self: *Self) void {
-            const free_space = self.RX_fifo.writableLength();
-            const data_slice = self.RX_callback_handler(free_space, self.TX_RX_user_data);
-            if (data_slice.len > free_space) {
-                self.RX_fifo.write(data_slice[0..free_space]) catch return;
-                return;
+            const free_space = self.get_rx_free_space();
+            if (self.RX_callback_handler) |rxcallback| {
+                const data_slice = rxcallback(free_space, self.TX_RX_user_data);
+                if (data_slice.len > free_space) {
+                    self.RX_fifo.write(data_slice[0..free_space]) catch return;
+                    return;
+                }
+                self.RX_fifo.write(data_slice) catch return;
             }
-            self.RX_fifo.write(data_slice) catch return;
-            return;
         }
 
         fn get_cmd_type(self: *Self, aux_buffer: []const u8) DriverError!void {
@@ -383,7 +394,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
                     else => {},
                 }
                 if (self.on_cmd_response) |callback| {
-                    callback(.Ok, resp, self.internal_user_data);
+                    callback(.Ok, resp, self.Error_handler_user_data);
                 }
             }
             self.TX_wait_response = null;
@@ -415,7 +426,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
                     else => {},
                 }
                 if (self.on_cmd_response) |callback| {
-                    callback(.Error, resp, self.internal_user_data);
+                    callback(.Error, resp, self.Error_handler_user_data);
                 }
             }
             self.TX_wait_response = null;
@@ -441,7 +452,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
                 2 => {
                     var pkg: TXEventPkg = .{};
 
-                    const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}?{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_IP)], postfix }) catch return;
+                    const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}?{s}", .{ prefix, get_cmd_string(commands_enum.NETWORK_IP), postfix }) catch return;
                     pkg.cmd_len = cmd_slice.len;
                     pkg.cmd_enum = .NETWORK_IP;
 
@@ -454,7 +465,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             }
             if (tx_event) |event| {
                 if (self.on_WiFi_event) |callback| {
-                    callback(event, null, self.internal_user_data);
+                    callback(event, null, self.WiFi_user_data);
                 }
             }
         }
@@ -475,7 +486,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
                 },
             };
             if (self.on_WiFi_event) |callback| {
-                callback(wifi_event, data_slice[2..(data_slice.len - 2)], self.internal_user_data);
+                callback(wifi_event, data_slice[2..(data_slice.len - 2)], self.WiFi_user_data);
             }
             self.Wifi_state = .CONNECTED;
         }
@@ -492,7 +503,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
                 else => WifiEvent.WiFi_ERROR_UNKNOWN,
             };
             if (self.on_WiFi_event) |callback| {
-                callback(error_enum, null, self.internal_user_data);
+                callback(error_enum, null, self.WiFi_user_data);
             }
         }
 
@@ -500,14 +511,14 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             if (aux_buffer.len < 34) return DriverError.INVALID_ARGS;
             const mac = aux_buffer[16..33];
             if (self.on_WiFi_event) |callback| {
-                callback(.WiFi_STA_DISCONNECTED, mac, self.internal_user_data);
+                callback(.WiFi_STA_DISCONNECTED, mac, self.WiFi_user_data);
             }
         }
         fn WiFi_get_device_ip(self: *Self, aux_buffer: []const u8) DriverError!void {
             if (aux_buffer.len < 46) return DriverError.INVALID_RESPONSE;
             const ip = get_cmd_slice(aux_buffer[34..], &[_]u8{}, &[_]u8{'"'});
             if (self.on_WiFi_event) |callback| {
-                callback(.WIFi_STA_GOT_IP, ip, self.internal_user_data);
+                callback(.WIFi_STA_GOT_IP, ip, self.WiFi_user_data);
             }
         }
 
@@ -515,7 +526,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             if (aux_buffer.len < 37) return DriverError.INVALID_ARGS;
             const mac = aux_buffer[19..36];
             if (self.on_WiFi_event) |callback| {
-                callback(.WiFi_STA_DISCONNECTED, mac, self.internal_user_data);
+                callback(.WiFi_STA_DISCONNECTED, mac, self.WiFi_user_data);
             }
         }
 
@@ -763,7 +774,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             var cmd_size: usize = 0;
             cmd_slice = std.fmt.bufPrint(inner_buffer, "{s}{s}={d},\"TCP\",\"{s}\",{d},{d}{s}", .{
                 prefix,
-                COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_CONNECT)],
+                get_cmd_string(.NETWORK_CONNECT),
                 id,
                 args.remote_host,
                 args.remote_port,
@@ -779,7 +790,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             var cmd_size: usize = 0;
             cmd_slice = std.fmt.bufPrint(inner_buffer, "{s}{s}={d},\"UDP\",\"{s}\",{d}", .{
                 prefix,
-                COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_CONNECT)],
+                get_cmd_string(.NETWORK_CONNECT),
                 id,
                 args.remote_host,
                 args.remote_port,
@@ -915,7 +926,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
 
             //send dummy cmd to clear the module input
             var pkg: TXEventPkg = .{};
-            var cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}", .{ COMMANDS_TOKENS[@intFromEnum(commands_enum.DUMMY)], postfix }) catch return DriverError.INVALID_ARGS;
+            var cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}", .{ get_cmd_string(.DUMMY), postfix }) catch return DriverError.INVALID_ARGS;
             pkg.cmd_len = cmd_slice.len;
 
             self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
@@ -926,26 +937,26 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
 
             //desable ECHO
-            cmd_slice = try std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}", .{ COMMANDS_TOKENS[@intFromEnum(commands_enum.ECHO_OFF)], postfix });
+            cmd_slice = try std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}", .{ get_cmd_string(.ECHO_OFF), postfix });
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .ECHO_OFF;
             pkg.Extra_data = .{ .Command = {} };
             try self.TX_fifo.writeItem(pkg);
 
             //disable sysstore
-            cmd_slice = try std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=0{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.SYSSTORE)], postfix });
+            cmd_slice = try std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=0{s}", .{ prefix, get_cmd_string(.SYSSTORE), postfix });
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .SYSSTORE;
             try self.TX_fifo.writeItem(pkg);
 
             //enable multi-conn
-            cmd_slice = try std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.IP_MUX)], postfix });
+            cmd_slice = try std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1{s}", .{ prefix, get_cmd_string(commands_enum.IP_MUX), postfix });
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .IP_MUX;
             try self.TX_fifo.writeItem(pkg);
 
             //disable wifi auto connection
-            cmd_slice = try std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=0{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_AUTOCONN)], postfix });
+            cmd_slice = try std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=0{s}", .{ prefix, get_cmd_string(.WIFI_AUTOCONN), postfix });
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .WIFI_AUTOCONN;
             try self.TX_fifo.writeItem(pkg);
@@ -987,7 +998,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             if (config.jap_timeout > 600) return DriverError.INVALID_ARGS;
 
             var pkg: TXEventPkg = .{};
-            const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_CONNECT)] }) catch return;
+            const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{ prefix, get_cmd_string(.WIFI_CONNECT) }) catch return;
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .WIFI_CONNECT;
             pkg.Extra_data = .{ .WiFi = .{ .STA_conf_pkg = config } };
@@ -1009,7 +1020,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             }
 
             var pkg: TXEventPkg = .{};
-            const cmd_slice = try std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_CONF)] });
+            const cmd_slice = try std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{ prefix, get_cmd_string(.WIFI_CONF) });
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .WIFI_CONF;
             pkg.Extra_data = .{ .WiFi = .{ .AP_conf_pkg = config } };
@@ -1018,7 +1029,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
 
         pub fn set_WiFi_mode(self: *Self, mode: WiFiDriverMode) !void {
             var pkg: TXEventPkg = .{};
-            const cmd_slice = try std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_SET_MODE)], @intFromEnum(mode), postfix });
+            const cmd_slice = try std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d}{s}", .{ prefix, get_cmd_string(.WIFI_SET_MODE), @intFromEnum(mode), postfix });
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .WIFI_SET_MODE;
             self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
@@ -1027,10 +1038,20 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
 
         pub fn WiFi_disconnect(self: *Self) DriverError!void {
             var pkg: TXEventPkg = .{};
-            const cmd_slice = try std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.WIFI_DISCONNECT)], postfix });
+            const cmd_slice = try std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}{s}", .{ prefix, get_cmd_string(.WIFI_DISCONNECT), postfix });
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .WIFI_DISCONNECT;
             self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
+        }
+
+        pub fn set_response_event_handler(self: *Self, callback: response_event_type, user_data: ?*anyopaque) void {
+            self.on_cmd_response = callback;
+            self.Error_handler_user_data = user_data;
+        }
+
+        pub fn set_WiFi_event_handler(self: *Self, callback: WIFI_event_type, user_data: ?*anyopaque) void {
+            self.on_WiFi_event = callback;
+            self.WiFi_user_data = user_data;
         }
         pub fn set_network_mode(self: *Self, mode: NetworkDriveMode) !void {
             self.div_binds = switch (mode) {
@@ -1040,7 +1061,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             };
 
             var pkg: TXEventPkg = .{};
-            const cmd_slice = try std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER_CONF)], self.div_binds, postfix });
+            const cmd_slice = try std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d}{s}", .{ prefix, get_cmd_string(.NETWORK_SERVER_CONF), self.div_binds, postfix });
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .NETWORK_SERVER_CONF;
             self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
@@ -1071,7 +1092,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             var pkg: TXEventPkg = .{};
             if (id > self.Network_binds.len) return DriverError.INVALID_BIND;
             if (self.Network_binds[id]) |*bd| {
-                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_CLOSE)], id, postfix }) catch return DriverError.INVALID_ARGS;
+                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d}{s}", .{ prefix, get_cmd_string(.NETWORK_CLOSE), id, postfix }) catch return DriverError.INVALID_ARGS;
                 pkg.cmd_len = cmd_slice.len;
                 pkg.cmd_enum = .NETWORK_CLOSE;
                 pkg.Extra_data = .{
@@ -1118,7 +1139,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             if (self.network_mode == NetworkDriveMode.CLIENT_ONLY) return DriverError.SERVER_OFF;
             var pkg: TXEventPkg = .{ .cmd_enum = .NETWORK_SERVER };
 
-            var cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1,{d}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER)], port }) catch return DriverError.INVALID_ARGS;
+            var cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1,{d}", .{ prefix, get_cmd_string(.NETWORK_SERVER), port }) catch return DriverError.INVALID_ARGS;
             var slice_len = cmd_slice.len;
             switch (server_type) {
                 .Default => {
@@ -1194,7 +1215,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
 
             //send server close server command
             var pkg: TXEventPkg = .{};
-            const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=0,1{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SERVER)], postfix }) catch unreachable;
+            const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=0,1{s}", .{ prefix, get_cmd_string(commands_enum.NETWORK_SERVER), postfix }) catch unreachable;
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .NETWORK_SERVER;
             self.TX_fifo.writeItem(pkg) catch DriverError.TX_BUFFER_FULL;
@@ -1208,7 +1229,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
 
             if (self.Network_binds[id]) |*bd| {
                 var pkg: TXEventPkg = .{};
-                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d},{d}{s}", .{ prefix, COMMANDS_TOKENS[@intFromEnum(commands_enum.NETWORK_SEND)], id, data.len, postfix }) catch return DriverError.INVALID_ARGS;
+                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d},{d}{s}", .{ prefix, get_cmd_string(.NETWORK_SEND), id, data.len, postfix }) catch return DriverError.INVALID_ARGS;
                 pkg.cmd_len = cmd_slice.len;
                 pkg.cmd_enum = .NETWORK_SEND;
                 pkg.Extra_data = .{ .Socket = .{ .descriptor_id = id, .pkg_type = .{
@@ -1222,11 +1243,12 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
         }
 
         //TODO: add more config param
-        pub fn init(txcallback: TX_callback, rxcallback: RX_callback) Self {
+        pub fn init(txcallback: TX_callback, rxcallback: RX_callback, user_data: ?*anyopaque) Self {
             //const ATdrive = create_drive(buffer_size);
             return .{
                 .RX_callback_handler = rxcallback,
                 .TX_callback_handler = txcallback,
+                .TX_RX_user_data = user_data,
                 .RX_fifo = fifo.LinearFifo(u8, .{ .Static = RX_SIZE }).init(),
                 .TX_fifo = fifo.LinearFifo(TXEventPkg, .{ .Static = TX_event_pool }).init(),
             };

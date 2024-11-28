@@ -31,6 +31,8 @@ Features that may be implemented
 
 ## Get started
 
+at the moment this Driver does not have a command to configure UART, you need to pre-configure with:[AT+UART_DEF](https://docs.espressif.com/projects/esp-at/en/latest/esp32/AT_Command_Set/Basic_AT_Commands.html#at-uart-def-default-uart-configuration-saved-in-flash) before using
+
 - [Porting](#porting)
 - [WiFi setup](#basic-wifi-config)
     - [WiFi Events](#wifi-events)

@@ -35,6 +35,8 @@ at the moment this Driver does not have a command to configure UART, you need to
 
 - [Porting](#porting)
 - [WiFi setup](#basic-wifi-config)
+    - [WiFi AP](#setting-up-the-module-as-an-access-point)
+    - [WiFi STA](#setting-up-the-module-as-a-station)
     - [WiFi Events](#wifi-events)
 - [Network Setup](#basic-network)
     - [Clients](#client)
@@ -123,12 +125,14 @@ ESPAT has 3 WiFi modes:
 
 the WiFi mode can be changed at any time, but keep in mind that the module will not automatically connect to the WiFi after the AP mode is changed to STA (this is not a hardware or driver limitation, it is just a default setting, it can be changed in the future according to user feedback)
 
-Setting up the module as an access point: With WiFi configured for AP or AP_STA mode , create a configuration struct: `WiFiAPConfig`
+#### Setting up the module as an access point:
+With WiFi configured for AP or AP_STA mode , create a configuration struct: `WiFiAPConfig`
 the fields in this struct correspond directly to the settings of the AT commands. [soft AP parameters](https://docs.espressif.com/projects/esp-at/en/release-v4.0.0.0/esp32/AT_Command_Set/Wi-Fi_AT_Commands.html#id28)
 
 To save the settings and enable SoftAP mode, pass the configuration struct to the function: `WiFi_config_AP(config: WiFiAPConfig)`
 
-Setting up the module as a station: With WiFi configured for STA or AP_STA mode , create a configuration struct: `WiFiSTAConfig`
+#### Setting up the module as a station:
+With WiFi configured for STA or AP_STA mode , create a configuration struct: `WiFiSTAConfig`
 the fields in this struct correspond directly to the settings of the AT commands. [STA parameters](https://docs.espressif.com/projects/esp-at/en/release-v4.0.0.0/esp32/AT_Command_Set/Wi-Fi_AT_Commands.html#id11)
 
 To save the settings and enable STA mode, pass the configuration struct to the function: `WiFi_connect_AP(config: WiFiSTAConfig)`
@@ -188,7 +192,7 @@ You can change the network mode at any time, but this may have some side effects
 
 - Clients: Decreasing the number of client connections will immediately delete the associated handler for the connection, causing data loss. Make sure that all client connections have been terminated.
 
-- Server: Decreasing the number of server connections will only take effect when the server is deleted.
+- Server: change the number of server connections will only take effect when the server is deleted.
 
 #### Client
 To start a client the first thing you should do is get a Socket ID by the function: `bind(event_callback: ClientCallback, user_data: ?*anyopaque)`

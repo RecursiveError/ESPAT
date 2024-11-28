@@ -1,5 +1,6 @@
-TODO doc
-base code
+this is an example of generic impementation made using the [ZEG serial library](https://github.com/ZigEmbeddedGroup/serial)
+
+## code:
 ```zig
 const ESP_AT = @import("ESPAT");
 const zig_serial = @import("serial");
@@ -127,7 +128,7 @@ const AP_config = ESP_AT.WiFiAPConfig{
 };
 
 pub fn main() !void {
-    const port_name = "\\\\.\\COM4";
+    const port_name = "<serial port>";
 
     var serial = std.fs.cwd().openFile(port_name, .{ .mode = .read_write }) catch |err| switch (err) {
         error.FileNotFound => {
@@ -145,13 +146,12 @@ pub fn main() !void {
         .stop_bits = .one,
         .handshake = .none,
     });
-    var my_drive = ATdrive.init(TX_callback, rx_callback);
+    var my_drive = ATdrive.init(TX_callback, rx_callback, &serial);
     std.log.info("DRIVER MEM: {}", .{@sizeOf(@TypeOf(my_drive))});
-    my_drive.on_WiFi_event = device_callback;
-    my_drive.on_cmd_response = result_callback;
-    my_drive.TX_RX_user_data = &serial;
     defer my_drive.deinit_driver();
     try my_drive.init_driver();
+    my_drive.set_WiFi_event_handler(device_callback, null);
+    my_drive.set_response_event_handler(result_callback, null);
     try my_drive.set_WiFi_mode(ESP_AT.WiFiDriverMode.AP_STA);
     try my_drive.set_network_mode(ESP_AT.NetworkDriveMode.SERVER_CLIENT);
     my_drive.WiFi_config_AP(AP_config) catch |err| {
@@ -172,11 +172,6 @@ pub fn main() !void {
     };
     const id = try my_drive.bind(client_callback, null);
     try my_drive.connect(id, config);
-    while (my_drive.Wifi_state != .CONNECTED) {
-        my_drive.process() catch |err| {
-            _ = std.log.info("Driver got error: {}", .{err});
-        };
-    }
     _ = std.log.info("sERVER OPEN ON {}", .{server_port});
     while (true) {
         my_drive.process() catch |err| {
@@ -184,4 +179,5 @@ pub fn main() !void {
         };
     }
 }
+
 ```

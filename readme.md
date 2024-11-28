@@ -43,10 +43,11 @@ at the moment this Driver does not have a command to configure UART, you need to
     - [Server](#server)
     - [Network Events](#network-events)
 - [Error Handling](#error-handling)
+- [Examples](#examples)
 
 ### Porting
  
-To start using this driver, the first step is to create the driver with: `EspAT(RX_buffer_size, TX_pool_size).init(TX_callback, RX_callback)`  
+To start using this driver, the first step is to create the driver with: `EspAT(RX_buffer_size, TX_pool_size).init(TX_callback, RX_callback, user_data)`  
 
 - `RX_buffer_size`: Byte size of the driver's input buffer, minimum size: 50 bytes
 - `TX_pool_size`: Driver event pool size, minimum size: 5 events (amount of events used at driver startup)
@@ -71,7 +72,7 @@ All you need to do to port this driver is implement 2 callbacks:
 
     - `Returns`: Void
 
- You can set the user parameter by the attribute: `TX_RX_user_data`
+- `user_data`: An optional pointer to a user parameter for TX and RX callbacks
 
  For the driver to work it is also necessary to call the function: `process` periodically, this function also returns internal driver errors. [TODO: Error Handling DOC]
 
@@ -100,9 +101,7 @@ fn rx_callback(free_size: usize, user_data: ?*anyopaque) []u8 {
 fn main() !void {
     var serial = Serial.lib;
     var driver = ESP_AT.EspAT(4096, 20)
-        .init(TX_callback, rx_callback);
-    
-    drive.TX_RX_user_data = &serial;
+        .init(TX_callback, rx_callback, &serial);
     while(true){
         my_drive.process() catch |err| {
             _ = std.log.err("Driver got error: {}", .{err});
@@ -139,15 +138,13 @@ To save the settings and enable STA mode, pass the configuration struct to the f
 
 ### WiFi events
 
-All WiFi events are handled through a callback:
-`fn on_WiFi_event(event: WifiEvent, data: ?[]const u8, user_data: ?*anyopaque) void`:
-- `event`: enum of WiFi events
-- `data`: some WiFi events may return additional data
+all WiFi events are handled by a single handler, which can be set with: `set_WiFi_event_handler(callback: WIFI_event_type, user_data: ?*anyopaque)`:
+
+- `WIFI_event_type`: `fn on_WiFi_event(event: WifiEvent, data: ?[]const u8, user_data: ?*anyopaque) void`:
+    - `event`: enum of WiFi events
+    - `data`: some WiFi events may return additional data
+    - `user_data`: optional pointer to a user parameter
 - `user_data`: optional pointer to a user parameter
-
-simply pass the function to the `on_WiFi_event` attribute to handle WiFi events.
-
-to add user parameters, pass a reference from the data to the `internal_user_data` attribute (Note: this parameter is shared across all Driver event callbacks).
 
 WiFi event table
 
@@ -252,4 +249,5 @@ The Struct Client contains all the information needed to manage the connection:
 TODO
 
 
+### Examples:
 complete example code: [Generic port](docs/generic_port.md)

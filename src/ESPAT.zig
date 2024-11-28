@@ -980,6 +980,11 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             self.machine_state = .init;
         }
 
+        pub fn set_response_event_handler(self: *Self, callback: response_event_type, user_data: ?*anyopaque) void {
+            self.on_cmd_response = callback;
+            self.Error_handler_user_data = user_data;
+        }
+
         //TODO: add more config
         pub fn WiFi_connect_AP(self: *Self, config: WiFiSTAConfig) DriverError!void {
             if (self.Wifi_mode == .AP) {
@@ -1045,11 +1050,6 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .WIFI_DISCONNECT;
             self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
-        }
-
-        pub fn set_response_event_handler(self: *Self, callback: response_event_type, user_data: ?*anyopaque) void {
-            self.on_cmd_response = callback;
-            self.Error_handler_user_data = user_data;
         }
 
         pub fn set_WiFi_event_handler(self: *Self, callback: WIFI_event_type, user_data: ?*anyopaque) void {

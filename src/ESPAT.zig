@@ -366,6 +366,12 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             }
         }
 
+        pub fn notify(self: *Self, data: []const u8) void {
+            const free_space = self.get_rx_free_space();
+            const slice = if (data.len > free_space) data[0..free_space] else data;
+            self.RX_fifo.write(slice) catch unreachable;
+        }
+
         fn get_cmd_type(self: *Self, aux_buffer: []const u8) DriverError!void {
             const response = get_cmd_slice(aux_buffer, &[_]u8{','}, &[_]u8{ ' ', '\r' });
             const response_callback = cmd_response_map.get(response);

@@ -1,6 +1,12 @@
 const std = @import("std");
 const fifo = std.fifo;
 
+const WiFi = @import("util/WiFi.zig");
+pub const WiFiAPConfig = WiFi.WiFiAPConfig;
+pub const WiFiSTAConfig = WiFi.WiFiSTAConfig;
+pub const WifiEvent = WiFi.WifiEvent;
+pub const WiFiEncryption = WiFi.WiFiEncryption;
+
 pub const DriverError = error{
     DRIVER_OFF,
     WIFI_OFF,
@@ -44,11 +50,10 @@ pub const Drive_states = enum {
     FATAL_ERROR,
 };
 
-pub const WiFi_encryption = enum {
-    OPEN,
-    WPA_PSK,
-    WPA2_PSK,
-    WPA_WPA2_PSK,
+pub const WiFistate = enum {
+    OFF,
+    DISCONECTED,
+    CONNECTED,
 };
 
 pub const commands_enum = enum(u8) {
@@ -104,35 +109,9 @@ const postfix = "\r\n";
 
 pub const CommandResults = enum(u8) { Ok, Error };
 
-pub const WIFI_RESPOSE_TOKEN = [_][]const u8{
-    "DISCONNECT",
-    "CONNECTED",
-    "GOT IP",
-};
-
 pub const SEND_RESPONSE_TOKEN = [_][]const u8{
     "OK",
     "FAIL",
-};
-
-pub const WifiEvent = enum(u8) {
-    //Events received from the access point (when in station mode)
-    WiFi_AP_CON_START,
-    WiFi_AP_CONNECTED,
-    WiFi_AP_GOT_MASK,
-    WiFi_AP_GOT_IP,
-    WiFi_AP_GOT_GATEWAY,
-    WiFi_AP_DISCONNECTED,
-    //events received from the stations (when in access point mode)
-    WiFi_STA_CONNECTED,
-    WIFi_STA_GOT_IP,
-    WiFi_STA_DISCONNECTED,
-    //events generated from WiFi errors
-    WiFi_ERROR_TIMEOUT,
-    WiFi_ERROR_PASSWORD,
-    WiFi_ERROR_INVALID_SSID,
-    WiFi_ERROR_CONN_FAIL,
-    WiFi_ERROR_UNKNOWN,
 };
 
 //TODO: add more events
@@ -164,40 +143,8 @@ pub const BusyBitFlags = packed struct {
     Bluetooth: bool,
 };
 
-pub const WiFistate = enum {
-    OFF,
-    DISCONECTED,
-    CONNECTED,
-};
-
 pub const CommandPackage = struct {
     busy_flag: bool = false,
-};
-
-pub const WiFiSTAConfig = struct {
-    ssid: []const u8,
-    pwd: ?[]const u8 = null,
-    bssid: ?[]const u8 = null,
-    pci_en: u1 = 0,
-    reconn_interval: u32 = 1,
-    listen_interval: u32 = 3,
-    scan_mode: u1 = 0, //fast scan
-    jap_timeout: u32 = 15,
-    pmf: u1 = 0, //pmf disable
-};
-
-pub const WiFiAPConfig = struct {
-    ssid: []const u8,
-    pwd: ?[]const u8 = null,
-    channel: u8,
-    ecn: WiFi_encryption,
-    max_conn: u4 = 10,
-    hidden_ssid: u1 = 0,
-};
-
-pub const WiFiPackage = union(enum) {
-    AP_conf_pkg: WiFiAPConfig,
-    STA_conf_pkg: WiFiSTAConfig,
 };
 
 pub const NetworkSendPkg = struct {
@@ -240,6 +187,12 @@ pub const NetworkPackage = struct {
     descriptor_id: usize = 255,
     pkg_type: NetWorPkgType,
 };
+
+pub const WiFiPackage = union(enum) {
+    AP_conf_pkg: WiFiAPConfig,
+    STA_conf_pkg: WiFiSTAConfig,
+};
+
 pub const BluetoothPackage = struct {
     //TODO
 };
@@ -308,15 +261,15 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
         const ClientCallback = *const fn (client: Client, user_data: ?*anyopaque) void;
         const CMD_CALLBACK_TYPE = *const fn (self: *Self, aux_buffer: []const u8) DriverError!void;
         const cmd_response_map = std.StaticStringMap(CMD_CALLBACK_TYPE).initComptime(.{
+            .{ "ready", Self.driver_ready },
             .{ "OK", Self.ok_response },
             .{ "ERROR", Self.error_response },
             .{ "FAIL", Self.error_response },
-            .{ "WIFI", Self.wifi_response },
             .{ ",CONNECT", Self.network_conn_event },
             .{ ",CLOSED", Self.network_closed_event },
             .{ "SEND", Self.network_send_event },
-            .{ "ready", Self.driver_ready },
             .{ "+IPD", Self.parse_network_data },
+            .{ "WIFI", Self.wifi_response },
             .{ "+CIPSTA", Self.WiFi_get_AP_info },
             .{ "+CWJAP", Self.WiFi_error },
             .{ "+STA_CONNECTED", Self.WiFi_get_device_conn_mac },
@@ -449,40 +402,17 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
         }
 
         fn wifi_response(self: *Self, aux_buffer: []const u8) DriverError!void {
-            var index: usize = 0;
-            var tx_event: ?WifiEvent = null;
             const wifi_event_slice = get_cmd_slice(aux_buffer[5..], &[_]u8{}, &[_]u8{'\r'});
-            for (WIFI_RESPOSE_TOKEN) |TOKEN| {
-                const result = std.mem.eql(u8, wifi_event_slice, TOKEN);
-                if (result) {
-                    break;
-                }
-                index += 1;
+            const base_event = WiFi.get_WiFi_base_event(wifi_event_slice);
+            if (base_event == .WiFi_AP_CONNECTED) {
+                var pkg: TXEventPkg = .{};
+                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}?{s}", .{ prefix, get_cmd_string(.NETWORK_IP), postfix }) catch unreachable;
+                pkg.cmd_len = cmd_slice.len;
+                pkg.cmd_enum = .NETWORK_IP;
+                self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
             }
-            switch (index) {
-                0 => {
-                    tx_event = WifiEvent.WiFi_AP_DISCONNECTED;
-                    self.Wifi_state = .DISCONECTED;
-                },
-                1 => tx_event = WifiEvent.WiFi_AP_CON_START,
-                2 => {
-                    var pkg: TXEventPkg = .{};
-
-                    const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}?{s}", .{ prefix, get_cmd_string(commands_enum.NETWORK_IP), postfix }) catch unreachable;
-                    pkg.cmd_len = cmd_slice.len;
-                    pkg.cmd_enum = .NETWORK_IP;
-
-                    self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
-                    tx_event = WifiEvent.WiFi_AP_CONNECTED;
-                },
-                else => {
-                    return DriverError.INVALID_RESPONSE;
-                },
-            }
-            if (tx_event) |event| {
-                if (self.on_WiFi_event) |callback| {
-                    callback(event, null, self.WiFi_user_data);
-                }
+            if (self.on_WiFi_event) |callback| {
+                callback(base_event, null, self.WiFi_user_data);
             }
         }
 
@@ -491,18 +421,12 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
         }
 
         fn WiFi_get_AP_info(self: *Self, aux_buffer: []const u8) DriverError!void {
-            const nettype = aux_buffer[8];
-            const data_slice = get_cmd_slice(aux_buffer, &[_]u8{':'}, &[_]u8{'\n'});
-            const wifi_event = switch (nettype) {
-                'i' => WifiEvent.WiFi_AP_GOT_IP,
-                'g' => WifiEvent.WiFi_AP_GOT_GATEWAY,
-                'n' => WifiEvent.WiFi_AP_GOT_MASK,
-                else => {
-                    return DriverError.INVALID_RESPONSE;
-                },
-            };
+            const event_slice = get_cmd_slice(aux_buffer[8..], &[_]u8{}, &[_]u8{':'});
+            const data_start = event_slice.len + 10;
+            const data_slice = get_cmd_slice(aux_buffer[data_start..], &[_]u8{}, &[_]u8{'"'});
+            const wifi_event = WiFi.get_WiFi_base_event(event_slice);
             if (self.on_WiFi_event) |callback| {
-                callback(wifi_event, data_slice[2..(data_slice.len - 2)], self.WiFi_user_data);
+                callback(wifi_event, data_slice, self.WiFi_user_data);
             }
             self.Wifi_state = .CONNECTED;
         }
@@ -510,16 +434,9 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
         fn WiFi_error(self: *Self, aux_buffer: []const u8) DriverError!void {
             self.busy_flag.WiFi = false;
             if (aux_buffer.len < 8) return DriverError.INVALID_RESPONSE;
-            const error_id: u8 = aux_buffer[7];
-            const error_enum = switch (error_id) {
-                '1' => WifiEvent.WiFi_ERROR_TIMEOUT,
-                '2' => WifiEvent.WiFi_ERROR_PASSWORD,
-                '3' => WifiEvent.WiFi_ERROR_INVALID_SSID,
-                '4' => WifiEvent.WiFi_ERROR_CONN_FAIL,
-                else => WifiEvent.WiFi_ERROR_UNKNOWN,
-            };
+            const error_id = WiFi.get_WiFi_error_event(aux_buffer);
             if (self.on_WiFi_event) |callback| {
-                callback(error_enum, null, self.WiFi_user_data);
+                callback(error_id, null, self.WiFi_user_data);
             }
         }
 
@@ -709,66 +626,13 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
         }
 
         fn WiFi_apply_AP_config(self: *Self, cmd: []const u8, config: WiFiAPConfig) DriverError!void {
-            var inner_buffer = &self.internal_aux_buffer;
-            var cmd_slice: []u8 = undefined;
-            var cmd_size: usize = 0;
-            cmd_slice = std.fmt.bufPrint(inner_buffer, "{s}\"{s}\",", .{ cmd, config.ssid }) catch unreachable;
-            cmd_size += cmd_slice.len;
-            if (config.pwd) |pwd| {
-                cmd_slice = std.fmt.bufPrint(inner_buffer[cmd_size..], "\"{s}\",", .{pwd}) catch unreachable;
-                cmd_size += cmd_slice.len;
-            } else {
-                cmd_slice = std.fmt.bufPrint(inner_buffer[cmd_size..], ",", .{}) catch unreachable;
-                cmd_size += cmd_slice.len;
-            }
-
-            cmd_slice = std.fmt.bufPrint(inner_buffer[cmd_size..], "{d},{d}", .{
-                config.channel,
-                @intFromEnum(config.ecn),
-            }) catch unreachable;
-            cmd_size += cmd_slice.len;
-            cmd_slice = std.fmt.bufPrint(inner_buffer[cmd_size..], ",{d},{d}", .{
-                config.max_conn,
-                config.hidden_ssid,
-            }) catch unreachable;
-            cmd_size += cmd_slice.len;
-            cmd_slice = std.fmt.bufPrint(inner_buffer[cmd_size..], "{s}", .{postfix}) catch unreachable;
-            cmd_size += cmd_slice.len;
-            self.TX_callback_handler(inner_buffer[0..cmd_size], self.TX_RX_user_data);
+            const config_str = WiFi.set_WiFi_AP_config(&self.internal_aux_buffer, cmd, config) catch unreachable;
+            self.TX_callback_handler(config_str, self.TX_RX_user_data);
         }
 
         fn WiFi_apply_STA_config(self: *Self, cmd: []const u8, config: WiFiSTAConfig) DriverError!void {
-            var inner_buffer = &self.internal_aux_buffer;
-            var cmd_slice: []u8 = undefined;
-            var cmd_size: usize = 0;
-            cmd_slice = std.fmt.bufPrint(inner_buffer, "{s}\"{s}\",", .{ cmd, config.ssid }) catch unreachable;
-            cmd_size += cmd_slice.len;
-            if (config.pwd) |pwd| {
-                cmd_slice = std.fmt.bufPrint(inner_buffer[cmd_size..], "\"{s}\",", .{pwd}) catch unreachable;
-                cmd_size += cmd_slice.len;
-            } else {
-                cmd_slice = std.fmt.bufPrint(inner_buffer[cmd_size..], ",", .{}) catch unreachable;
-                cmd_size += cmd_slice.len;
-            }
-            if (config.bssid) |bssid| {
-                cmd_slice = std.fmt.bufPrint(inner_buffer[cmd_size..], "\"{s}\",", .{bssid}) catch unreachable;
-                cmd_size += cmd_slice.len;
-            } else {
-                cmd_slice = std.fmt.bufPrint(inner_buffer[cmd_size..], ",", .{}) catch unreachable;
-                cmd_size += cmd_slice.len;
-            }
-            cmd_slice = std.fmt.bufPrint(inner_buffer[cmd_size..], "{d},{d},{d},{d},{d},{d}", .{
-                config.pci_en,
-                config.reconn_interval,
-                config.listen_interval,
-                config.scan_mode,
-                config.jap_timeout,
-                config.pmf,
-            }) catch unreachable;
-            cmd_size += cmd_slice.len;
-            cmd_slice = std.fmt.bufPrint(inner_buffer[cmd_size..], "{s}", .{postfix}) catch unreachable;
-            cmd_size += cmd_slice.len;
-            self.TX_callback_handler(inner_buffer[0..cmd_size], self.TX_RX_user_data);
+            const config_str = WiFi.set_WiFi_STA_config(&self.internal_aux_buffer, cmd, config) catch unreachable;
+            self.TX_callback_handler(config_str, self.TX_RX_user_data);
         }
 
         fn apply_tcp_config(self: *Self, id: usize, args: NetworkConnectPkg, tcp_conf: NetWorkTCPConn) void {
@@ -1025,24 +889,13 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
         }
 
         //TODO: add more config
-        pub fn WiFi_connect_AP(self: *Self, config: WiFiSTAConfig) DriverError!void {
+        pub fn WiFi_connect_AP(self: *Self, config: WiFiSTAConfig) !void {
             if (self.Wifi_mode == .AP) {
                 return DriverError.STA_OFF;
             } else if (self.Wifi_mode == WiFiDriverMode.NONE) {
                 return DriverError.WIFI_OFF;
             }
-            const ssid_len = config.ssid.len;
-            if ((ssid_len < 1) or (ssid_len > 32)) return DriverError.INVALID_ARGS;
-            if (config.pwd) |pwd| {
-                const pwd_len = pwd.len;
-                if ((pwd_len < 8) or (pwd_len > 60)) return DriverError.INVALID_ARGS;
-            }
-            if (config.bssid) |bssid| {
-                if (bssid.len < 17) return DriverError.INVALID_ARGS;
-            }
-            if (config.reconn_interval > 7200) return DriverError.INVALID_ARGS;
-            if (config.listen_interval > 100) return DriverError.INVALID_ARGS;
-            if (config.jap_timeout > 600) return DriverError.INVALID_ARGS;
+            try WiFi.check_WiFi_STA_config(config);
 
             var pkg: TXEventPkg = .{};
             const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{ prefix, get_cmd_string(.WIFI_CONNECT) }) catch unreachable;
@@ -1058,13 +911,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             } else if (self.Wifi_mode == .NONE) {
                 return DriverError.WIFI_OFF;
             }
-            //Error check
-            const ssid_len = config.ssid.len;
-            if ((ssid_len < 1) or (ssid_len > 32)) return DriverError.INVALID_ARGS;
-            if (config.pwd) |pwd| {
-                const pwd_len = pwd.len;
-                if ((pwd_len < 8) or (pwd_len > 60)) return DriverError.INVALID_ARGS;
-            }
+            try WiFi.check_WiFi_AP_config(config);
 
             var pkg: TXEventPkg = .{};
             const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{ prefix, get_cmd_string(.WIFI_CONF) }) catch unreachable;

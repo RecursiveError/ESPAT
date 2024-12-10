@@ -236,9 +236,17 @@ pub const RX_callback = ?*const fn (free_data: usize, user_data: ?*anyopaque) []
 pub const WIFI_event_type = ?*const fn (event: WifiEvent, data: ?[]const u8, user_data: ?*anyopaque) void;
 pub const response_event_type = ?*const fn (result: CommandResults, cmd: Commands, user_data: ?*anyopaque) void;
 
-pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_int) type {
-    if (RX_SIZE <= 50) @compileError("RX SIZE CANNOT BE LESS THAN 50 byte");
-    if (TX_event_pool <= 5) @compileError(" NETWORK POOL SIZE CANNOT BE LESS THAN 5 events"); //
+pub const Config = struct {
+    RX_size: usize = 2048,
+    TX_event_pool: usize = 25,
+    network_recv_size: usize = 2048,
+    network_binds: usize = 5,
+};
+
+pub fn EspAT(comptime driver_config: Config) type {
+    if (driver_config.RX_size < 128) @compileError("RX SIZE CANNOT BE LESS THAN 128 byte");
+    if (driver_config.network_recv_size < 128) @compileError("NETWORK RECV CAN NO BE LESS THAN 128 bytes");
+    if (driver_config.TX_event_pool <= 5) @compileError(" NETWORK POOL SIZE CANNOT BE LESS THAN 5 events"); //
     return struct {
 
         // data types
@@ -288,8 +296,8 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
         });
 
         //internal control data, (Do not modify)
-        RX_fifo: fifo.LinearFifo(u8, .{ .Static = RX_SIZE }),
-        TX_fifo: fifo.LinearFifo(TXEventPkg, .{ .Static = TX_event_pool }),
+        RX_fifo: fifo.LinearFifo(u8, .{ .Static = driver_config.RX_size }),
+        TX_fifo: fifo.LinearFifo(TXEventPkg, .{ .Static = driver_config.TX_event_pool }),
         TX_wait_response: ?Commands = null,
         TX_callback_handler: TX_callback,
         RX_callback_handler: RX_callback,
@@ -300,7 +308,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             .WiFi = false,
             .Bluetooth = false,
         },
-        internal_aux_buffer: [9000]u8 = undefined,
+        internal_aux_buffer: [driver_config.network_recv_size]u8 = undefined,
         internal_aux_buffer_pos: usize = 0,
 
         //Long data needs to be handled in a special state
@@ -316,7 +324,7 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
         div_binds: usize = 0,
 
         //network data
-        Network_binds: [5]?network_handler = .{ null, null, null, null, null },
+        Network_binds: [driver_config.network_binds]?network_handler = undefined,
         Network_corrent_pkg: NetworkToSend = .{},
 
         //callback handlers
@@ -471,8 +479,6 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
             }
         }
 
-        //+IPD only return \r\n at the and of the data pkg, and data pkg can be up to 8192 bytes
-        //It is necessary to check how many bytes are already in the buffer before requesting more
         fn parse_network_data(self: *Self, aux_buffer: []const u8) DriverError!void {
             var slices = std.mem.split(u8, aux_buffer, ",");
             _ = slices.next(); //skip first arg (+IPD,)
@@ -1170,13 +1176,17 @@ pub fn EspAT(comptime RX_SIZE: comptime_int, comptime TX_event_pool: comptime_in
         //TODO: add more config param
         pub fn init(txcallback: TX_callback, rxcallback: RX_callback, user_data: ?*anyopaque) Self {
             //const ATdrive = create_drive(buffer_size);
-            return .{
+            var driver = Self{
                 .RX_callback_handler = rxcallback,
                 .TX_callback_handler = txcallback,
                 .TX_RX_user_data = user_data,
-                .RX_fifo = fifo.LinearFifo(u8, .{ .Static = RX_SIZE }).init(),
-                .TX_fifo = fifo.LinearFifo(TXEventPkg, .{ .Static = TX_event_pool }).init(),
+                .RX_fifo = fifo.LinearFifo(u8, .{ .Static = driver_config.RX_size }).init(),
+                .TX_fifo = fifo.LinearFifo(TXEventPkg, .{ .Static = driver_config.TX_event_pool }).init(),
             };
+            for (0..driver_config.network_binds) |index| {
+                driver.Network_binds[index] = null;
+            }
+            return driver;
         }
     };
 }

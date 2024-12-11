@@ -161,3 +161,43 @@ pub fn paser_ip_data(str: []const u8) !ip_data {
         .data_len = data_size,
     };
 }
+
+//TODO: add more error types
+pub const ClientError = error{
+    InternalError,
+};
+
+pub const Client = struct {
+    id: usize,
+    driver: *anyopaque,
+    event: NetworkEvent,
+
+    send_fn: *const fn (ctx: *anyopaque, id: usize, data: []const u8) ClientError!void,
+    close_fn: *const fn (ctx: *anyopaque, id: usize) ClientError!void,
+    accept_fn: *const fn (ctx: *anyopaque, id: usize) ClientError!void,
+
+    pub fn send(self: *const Client, data: []const u8) !void {
+        try self.send_fn(self.driver, self.id, data);
+    }
+
+    pub fn close(self: *const Client) !void {
+        try self.close_fn(self.driver, self.id);
+    }
+    pub fn accept(self: *const Client) !void {
+        try self.accept_fn(self.driver, self.id);
+    }
+};
+
+pub const ClientCallback = *const fn (client: Client, user_data: ?*anyopaque) void;
+pub const NetworkHandler = struct {
+    state: NetworkHandlerState = .None,
+    to_send: usize = 0,
+    event_callback: ?ClientCallback = null,
+    client: Client,
+    user_data: ?*anyopaque = null,
+    pub fn notify(self: *const NetworkHandler) void {
+        if (self.event_callback) |callback| {
+            callback(self.client, self.user_data);
+        }
+    }
+};

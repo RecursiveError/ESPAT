@@ -1,11 +1,28 @@
 const std = @import("std");
 const fifo = std.fifo;
 
+const Commands_util = @import("util/commands.zig");
+pub const Commands = Commands_util.Commands;
+pub const get_cmd_string = Commands_util.get_cmd_string;
+const get_cmd_slice = Commands_util.get_cmd_slice;
+const infix = Commands_util.infix;
+const prefix = Commands_util.prefix;
+const postfix = Commands_util.postfix;
+
 const WiFi = @import("util/WiFi.zig");
 pub const WiFiAPConfig = WiFi.WiFiAPConfig;
 pub const WiFiSTAConfig = WiFi.WiFiSTAConfig;
 pub const WifiEvent = WiFi.WifiEvent;
 pub const WiFiEncryption = WiFi.WiFiEncryption;
+
+const Network = @import("util/network.zig");
+pub const NetworkPackageType = Network.NetworkPackageType;
+pub const NetworkEvent = Network.NetworkEvent;
+pub const NetworkHandlerState = Network.NetworkHandlerState;
+pub const NetworkConnectPkg = Network.NetworkConnectPkg;
+pub const NetworkTCPConn = Network.NetworkTCPConn;
+pub const NetworkUDPConn = Network.NetworkUDPConn;
+pub const NetworkHandlerType = Network.NetworkHandlerType;
 
 pub const DriverError = error{
     DRIVER_OFF,
@@ -56,91 +73,7 @@ pub const WiFistate = enum {
     CONNECTED,
 };
 
-pub const Commands = enum(u8) {
-    DUMMY,
-    RESET,
-    ECHO_OFF,
-    ECHO_ON,
-    SYSSTORE,
-    IP_MUX,
-    WIFI_SET_MODE,
-    WIFI_CONNECT,
-    WIFI_CONF,
-    WIFI_DISCONNECT,
-    WIFI_AUTOCONN,
-    NETWORK_CONNECT,
-    NETWORK_SEND,
-    NETWORK_CLOSE,
-    NETWORK_IP,
-    NETWORK_SERVER_CONF,
-    NETWORK_SERVER,
-    NETWORK_RECV_MODE,
-    NETWORK_RECV,
-    NETWORK_MSG_CONFIG,
-    //Extra
-
-};
-
-//This is not necessary since the user cannot send commands directly, but useful for debug
-pub const COMMANDS_TOKENS = [_][]const u8{
-    ".",
-    "RST",
-    "ATE0",
-    "ATE1",
-    "SYSSTORE",
-    "CIPMUX",
-    "CWMODE",
-    "CWJAP",
-    "CWSAP",
-    "CWQAP",
-    "CWAUTOCONN",
-    "CIPSTART",
-    "CIPSENDEX",
-    "CIPCLOSE",
-    "CIPSTA",
-    "CIPSERVERMAXCONN",
-    "CIPSERVER",
-    "CIPRECVMODE",
-    "CIPRECVDATA",
-    "CIPDINFO",
-};
-
-pub inline fn get_cmd_string(cmd: Commands) []const u8 {
-    return COMMANDS_TOKENS[@intFromEnum(cmd)];
-}
-
-const prefix = "AT+";
-const infix = "_CUR";
-const postfix = "\r\n";
-
 pub const CommandResults = enum(u8) { Ok, Error };
-
-pub const SEND_RESPONSE_TOKEN = [_][]const u8{
-    "OK",
-    "FAIL",
-};
-
-//TODO: add more events
-pub const NetworkEvent = union(enum) {
-    Connected: void,
-    Closed: void,
-    DataReport: usize,
-    ReadData: []const u8,
-    SendDataComplete: []const u8,
-    SendDataFail: void,
-};
-
-pub const NetworkHandlerState = enum {
-    None,
-    Connected,
-    Closed,
-};
-pub const NetworkHandlerType = enum {
-    Default,
-    TCP,
-    UDP,
-    SSL,
-};
 
 pub const BusyBitFlags = packed struct {
     Reset: bool,
@@ -150,49 +83,9 @@ pub const BusyBitFlags = packed struct {
     Bluetooth: bool,
 };
 
-pub const CommandPackage = struct {
-    busy_flag: bool = false,
-};
-
-pub const NetworkSendPkg = struct {
-    data: []const u8 = undefined,
-};
-
-pub const NetworkClosePkg = void;
-pub const NetWorkTCPConn = struct {
-    keep_alive: u16 = 0,
-};
-
-pub const NetworkUDPModes = enum {
-    Unchanged,
-    Change_first,
-    Change_all,
-};
-
-pub const NetworkUDPConn = struct {
-    local_port: ?u16 = null,
-    mode: NetworkUDPModes = .Unchanged,
-};
-pub const NetWorkConnectType = union(enum) {
-    tcp: NetWorkTCPConn,
-    ssl: NetWorkTCPConn,
-    udp: NetworkUDPConn,
-};
-pub const NetworkConnectPkg = struct {
-    remote_host: []const u8,
-    remote_port: u16,
-    config: NetWorkConnectType,
-};
-
-pub const NetWorPkgType = union(enum) {
-    NetworkSendPkg: NetworkSendPkg,
-    NetworkClosePkg: NetworkClosePkg,
-    NetworkConnectPkg: NetworkConnectPkg,
-};
-
 pub const NetworkPackage = struct {
     descriptor_id: usize = 255,
-    pkg_type: NetWorPkgType,
+    pkg_type: NetworkPackageType,
 };
 
 pub const WiFiPackage = union(enum) {
@@ -227,7 +120,7 @@ const NetworkToRead = struct {
 };
 
 const NetworkToSend = struct {
-    id: usize = 255,
+    id: usize = std.math.maxInt(usize),
     data: []const u8 = undefined,
 };
 
@@ -313,9 +206,9 @@ pub fn EspAT(comptime driver_config: Config) type {
 
         //Long data needs to be handled in a special state
         //to avoid locks on the executor while reading this data
-        //only for command data responses (+<cmd>:data)
+        //only for command data responses (+<cmd>:data) with unknow response len
         long_data_request: bool = false,
-        long_data: NetworkToRead = undefined,
+        long_data: NetworkToRead = undefined, //TODO: change this to support BLE
 
         machine_state: Drive_states = .init,
         Wifi_state: WiFistate = .OFF,
@@ -397,7 +290,7 @@ pub fn EspAT(comptime driver_config: Config) type {
                         const pkg = self.Network_corrent_pkg;
                         const client = Client{
                             .driver = self,
-                            .event = .{ .SendDataFail = {} },
+                            .event = .{ .SendDataCancel = pkg.data },
                             .id = pkg.id,
                         };
                         if (self.Network_binds[pkg.id]) |*bd| {
@@ -498,27 +391,10 @@ pub fn EspAT(comptime driver_config: Config) type {
         }
 
         fn parse_network_data(self: *Self, aux_buffer: []const u8) DriverError!void {
-            var slices = std.mem.split(u8, aux_buffer, ",");
-            _ = slices.next(); //skip first arg (+IPD,)
-
-            var id: usize = 0;
-            var data_size: usize = 0;
-
-            //get id
-            if (slices.next()) |recive_id| {
-                id = std.fmt.parseInt(usize, recive_id, 10) catch return DriverError.INVALID_RESPONSE;
-                if (id > self.Network_binds.len) return DriverError.INVALID_BIND;
-            } else {
-                return DriverError.INVALID_RESPONSE;
-            }
-
-            //get data len
-            if (slices.next()) |data_str| {
-                const data_size_slice = get_cmd_slice(data_str, &[_]u8{}, &[_]u8{'\r'});
-                data_size = std.fmt.parseInt(usize, data_size_slice, 10) catch return DriverError.INVALID_RESPONSE;
-            } else {
-                return DriverError.INVALID_RESPONSE;
-            }
+            const data = Network.paser_ip_data(aux_buffer) catch return DriverError.INVALID_RESPONSE;
+            if (data.id > self.Network_binds.len) return DriverError.INVALID_RESPONSE;
+            const id = data.id;
+            const data_size = data.data_len;
 
             if (self.Network_binds[id]) |bd| {
                 if (bd.event_callback) |callback| {
@@ -620,30 +496,24 @@ pub fn EspAT(comptime driver_config: Config) type {
         fn network_send_event(self: *Self, aux_buffer: []const u8) DriverError!void {
             self.busy_flag.Socket = false;
             const send_event_slice = get_cmd_slice(aux_buffer[5..], &[_]u8{}, &[_]u8{'\r'});
-            const result = std.mem.eql(u8, send_event_slice, SEND_RESPONSE_TOKEN[1]);
-            if (result) {
-                try self.network_send_resposnse();
-                return;
-            }
-        }
-
-        fn network_send_resposnse(self: *Self) DriverError!void {
-            const to_free = self.Network_corrent_pkg;
-            const pkg_id = to_free.id;
-            if (pkg_id > self.Network_binds.len) return DriverError.INVALID_RESPONSE;
-            if (self.Network_binds[pkg_id]) |*bd| {
+            const send_event = Network.get_send_event(send_event_slice) catch return DriverError.INVALID_RESPONSE;
+            const event: NetworkEvent = switch (send_event) {
+                .ok => NetworkEvent{ .SendDataOk = {} },
+                .fail => NetworkEvent{ .SendDataFail = {} },
+            };
+            const corrent_id = self.Network_corrent_pkg.id;
+            if (self.Network_binds[corrent_id]) |bd| {
                 if (bd.event_callback) |callback| {
                     const client: Client = .{
                         .driver = self,
-                        .event = .{ .SendDataFail = {} },
-                        .id = pkg_id,
+                        .event = event,
+                        .id = corrent_id,
                     };
                     callback(client, bd.user_data);
                 }
             }
         }
 
-        //TODO: send dummy pkg if pkg is null to void deadlocks
         fn network_send_data(self: *Self) DriverError!void {
             const pkg = self.Network_corrent_pkg;
             //if pkg is invalid, close the send request"
@@ -674,43 +544,13 @@ pub fn EspAT(comptime driver_config: Config) type {
             self.TX_callback_handler(config_str, self.TX_RX_user_data);
         }
 
-        fn apply_tcp_config(self: *Self, id: usize, args: NetworkConnectPkg, tcp_conf: NetWorkTCPConn) void {
-            var inner_buffer = &self.internal_aux_buffer;
-            var cmd_slice: []const u8 = undefined;
-            var cmd_size: usize = 0;
-            cmd_slice = std.fmt.bufPrint(inner_buffer, "{s}{s}={d},\"TCP\",\"{s}\",{d},{d}{s}", .{
-                prefix,
-                get_cmd_string(.NETWORK_CONNECT),
-                id,
-                args.remote_host,
-                args.remote_port,
-                tcp_conf.keep_alive,
-                postfix,
-            }) catch unreachable;
-            cmd_size = cmd_slice.len;
-            self.TX_callback_handler(inner_buffer[0..cmd_size], self.TX_RX_user_data);
+        fn apply_tcp_config(self: *Self, id: usize, args: NetworkConnectPkg, tcp_conf: NetworkTCPConn) void {
+            const config = Network.set_tcp_config(&self.internal_aux_buffer, id, args, tcp_conf) catch unreachable;
+            self.TX_callback_handler(config, self.TX_RX_user_data);
         }
         fn apply_udp_config(self: *Self, id: usize, args: NetworkConnectPkg, udp_conf: NetworkUDPConn) void {
-            var inner_buffer = &self.internal_aux_buffer;
-            var cmd_slice: []const u8 = undefined;
-            var cmd_size: usize = 0;
-            cmd_slice = std.fmt.bufPrint(inner_buffer, "{s}{s}={d},\"UDP\",\"{s}\",{d}", .{
-                prefix,
-                get_cmd_string(.NETWORK_CONNECT),
-                id,
-                args.remote_host,
-                args.remote_port,
-            }) catch unreachable;
-            cmd_size = cmd_slice.len;
-            if (udp_conf.local_port) |port| {
-                cmd_slice = std.fmt.bufPrint(inner_buffer[cmd_size..], ",{d}", .{port}) catch unreachable;
-            } else {
-                cmd_slice = std.fmt.bufPrint(inner_buffer[cmd_size..], ",", .{}) catch unreachable;
-            }
-            cmd_size += cmd_slice.len;
-            cmd_slice = std.fmt.bufPrint(inner_buffer[cmd_size..], ",{d}{s}", .{ @intFromEnum(udp_conf.mode), postfix }) catch unreachable;
-            cmd_size += cmd_slice.len;
-            self.TX_callback_handler(inner_buffer[0..cmd_size], self.TX_RX_user_data);
+            const config = Network.set_udp_config(&self.internal_aux_buffer, id, args, udp_conf) catch unreachable;
+            self.TX_callback_handler(config, self.TX_RX_user_data);
         }
 
         pub fn process(self: *Self) DriverError!void {
@@ -783,6 +623,11 @@ pub fn EspAT(comptime driver_config: Config) type {
                                     .id = id,
                                 };
                                 self.busy_flag.Socket = true;
+                            },
+                            .NetworkAcceptPkg => {
+                                self.long_data.id = id;
+                                self.TX_callback_handler(cmd_data, self.TX_RX_user_data);
+                                self.busy_flag.Command = true;
                             },
                             .NetworkClosePkg => {
                                 self.TX_callback_handler(cmd_data, self.TX_RX_user_data);
@@ -1155,7 +1000,7 @@ pub fn EspAT(comptime driver_config: Config) type {
 
         pub fn accept(self: *Self, id: usize) DriverError!void {
             if (id >= self.Network_binds.len) return DriverError.INVALID_ARGS;
-            const recv_buffer_size = self.internal_aux_buffer.len;
+            const recv_buffer_size = self.internal_aux_buffer.len - 50; //50 of pre-data
             var pkg: TXEventPkg = .{};
             const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d},{d}{s}", .{
                 prefix,
@@ -1166,8 +1011,8 @@ pub fn EspAT(comptime driver_config: Config) type {
             }) catch unreachable;
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .NETWORK_RECV;
+            pkg.Extra_data = .{ .Socket = .{ .descriptor_id = id, .pkg_type = .{ .NetworkAcceptPkg = {} } } };
             self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
-            self.long_data.id = id;
         }
 
         pub fn send(self: *Self, id: usize, data: []const u8) DriverError!void {
@@ -1207,23 +1052,4 @@ pub fn EspAT(comptime driver_config: Config) type {
             return driver;
         }
     };
-}
-
-fn get_cmd_slice(buffer: []const u8, start_tokens: []const u8, end_tokens: []const u8) []const u8 {
-    var start: usize = 0;
-    for (0..buffer.len) |index| {
-        for (start_tokens) |token| {
-            if (token == buffer[index]) {
-                start = index;
-                continue;
-            }
-        }
-
-        for (end_tokens) |token| {
-            if (token == buffer[index]) {
-                return buffer[start..index];
-            }
-        }
-    }
-    return buffer[start..];
 }

@@ -37,55 +37,73 @@ pub const WiFiAPConfig = struct {
     hidden_ssid: u1 = 0,
 };
 
-pub const WifiEvent = enum(u8) {
-    //Events received from the access point (when in station mode)
-    WiFi_AP_CON_START,
-    WiFi_AP_CONNECTED,
-    WiFi_AP_GOT_MASK,
-    WiFi_AP_GOT_IP,
-    WiFi_AP_GOT_GATEWAY,
-    WiFi_AP_DISCONNECTED,
-    //events received from the stations (when in access point mode)
-    WiFi_STA_CONNECTED,
-    WIFi_STA_GOT_IP,
-    WiFi_STA_DISCONNECTED,
-    //events generated from WiFi errors
-    WiFi_ERROR_TIMEOUT,
-    WiFi_ERROR_PASSWORD,
-    WiFi_ERROR_iNVALID_SSID,
-    WiFi_ERROR_CONN_FAIL,
-    WiFi_ERROR_UNKNOWN,
+pub const EventError = enum {
+    Timeout,
+    Password,
+    SSID,
+    FAIL,
+    Unknown,
 };
 
-const WIFI_RESPOSE_TOKEN = std.StaticStringMap(WifiEvent).initComptime(.{
-    .{ "DISCONNECT", WifiEvent.WiFi_AP_DISCONNECTED },
-    .{ "CONNECTED", WifiEvent.WiFi_AP_CON_START },
-    .{ "GOT IP", WifiEvent.WiFi_AP_CONNECTED },
-    .{ "ip", WifiEvent.WiFi_AP_GOT_IP },
-    .{ "gateway", WifiEvent.WiFi_AP_GOT_GATEWAY },
-    .{ "netmask", WifiEvent.WiFi_AP_GOT_MASK },
+pub const DeviceInfo = struct {
+    mac: []const u8,
+    ip: []const u8,
+};
+
+pub const WiFiBaseEvent = enum {
+    AP_CON_START,
+    AP_CONNECTED,
+    AP_GOT_MASK,
+    AP_GOT_IP,
+    AP_GOT_GATEWAY,
+    AP_DISCONNECTED,
+    //events received from the stations (when in access point mode)
+    STA_CONNECTED,
+    STA_GOT_IP,
+    STA_DISCONNECTED,
+    ERROR,
+};
+
+pub const WifiEvent = union(enum) {
+    //Events received from the access point (when in station mode)
+    AP_CON_START: void,
+    AP_CONNECTED: void,
+    AP_GOT_MASK: []const u8,
+    AP_GOT_IP: []const u8,
+    AP_GOT_GATEWAY: []const u8,
+    AP_DISCONNECTED: void,
+    //events received from the stations (when in access point mode)
+    STA_CONNECTED: []const u8,
+    STA_GOT_IP: DeviceInfo,
+    STA_DISCONNECTED: []const u8,
+    //events generated from WiFi errors
+    ERROR: EventError,
+};
+
+const RESPOSE_TOKEN = std.StaticStringMap(WiFiBaseEvent).initComptime(.{
+    .{ "DISCONNECT", WiFiBaseEvent.AP_DISCONNECTED },
+    .{ "CONNECTED", WiFiBaseEvent.AP_CON_START },
+    .{ "GOT IP", WiFiBaseEvent.AP_CONNECTED },
+    .{ "ip", WiFiBaseEvent.AP_GOT_IP },
+    .{ "gateway", WiFiBaseEvent.AP_GOT_GATEWAY },
+    .{ "netmask", WiFiBaseEvent.AP_GOT_MASK },
 });
 
-pub fn get_WiFi_base_event(event_str: []const u8) WifiEvent {
-    const event = WIFI_RESPOSE_TOKEN.get(event_str);
+pub fn get_base_event(event_str: []const u8) !WiFiBaseEvent {
+    const event = RESPOSE_TOKEN.get(event_str);
     if (event) |data| {
         return data;
     }
-    return WifiEvent.WiFi_ERROR_UNKNOWN;
+    return error.EventNotFound;
 }
 
-pub fn get_WiFi_error_event(event_str: []const u8) WifiEvent {
+pub fn get_error_event(event_str: []const u8) EventError {
     const error_id: u8 = event_str[7];
-    return switch (error_id) {
-        '1' => WifiEvent.WiFi_ERROR_TIMEOUT,
-        '2' => WifiEvent.WiFi_ERROR_PASSWORD,
-        '3' => WifiEvent.WiFi_ERROR_iNVALID_SSID,
-        '4' => WifiEvent.WiFi_ERROR_CONN_FAIL,
-        else => WifiEvent.WiFi_ERROR_UNKNOWN,
-    };
+    if ((error_id < '1') or (error_id > '4')) return EventError.Unknown;
+    return @enumFromInt(error_id - '0');
 }
 
-pub fn check_WiFi_AP_config(config: WiFiAPConfig) !void {
+pub fn check_AP_config(config: WiFiAPConfig) !void {
     const ssid_len = config.ssid.len;
     if ((ssid_len < 1) or (ssid_len > 32)) return WiFiErrors.invalidSSID;
 
@@ -100,7 +118,7 @@ pub fn check_WiFi_AP_config(config: WiFiAPConfig) !void {
     }
 }
 
-pub fn set_WiFi_AP_config(out_buffer: []u8, cmd: []const u8, config: WiFiAPConfig) ![]const u8 {
+pub fn set_AP_config(out_buffer: []u8, cmd: []const u8, config: WiFiAPConfig) ![]const u8 {
     if (out_buffer.len < 200) return error.BufferTooSmall;
     var cmd_slice: []u8 = undefined;
     var cmd_size: usize = 0;
@@ -129,7 +147,7 @@ pub fn set_WiFi_AP_config(out_buffer: []u8, cmd: []const u8, config: WiFiAPConfi
     return out_buffer[0..cmd_size];
 }
 
-pub fn check_WiFi_STA_config(config: WiFiSTAConfig) !void {
+pub fn check_STA_config(config: WiFiSTAConfig) !void {
     const ssid_len = config.ssid.len;
     if ((ssid_len < 1) or (ssid_len > 32)) return WiFiErrors.invalidSSID;
 
@@ -146,7 +164,7 @@ pub fn check_WiFi_STA_config(config: WiFiSTAConfig) !void {
     if (config.listen_interval > 100) return WiFiErrors.invalidListenTime;
     if (config.jap_timeout > 600) return WiFiErrors.invalidTimeout;
 }
-pub fn set_WiFi_STA_config(out_buffer: []u8, cmd: []const u8, config: WiFiSTAConfig) ![]u8 {
+pub fn set_STA_config(out_buffer: []u8, cmd: []const u8, config: WiFiSTAConfig) ![]u8 {
     if (out_buffer.len < 200) return error.BufferTooSmall;
     var cmd_slice: []u8 = undefined;
     var cmd_size: usize = 0;

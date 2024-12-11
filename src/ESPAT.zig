@@ -233,7 +233,7 @@ const NetworkToSend = struct {
 
 pub const TX_callback = *const fn (data: []const u8, user_data: ?*anyopaque) void;
 pub const RX_callback = ?*const fn (free_data: usize, user_data: ?*anyopaque) []u8;
-pub const WIFI_event_type = ?*const fn (event: WifiEvent, data: ?[]const u8, user_data: ?*anyopaque) void;
+pub const WIFI_event_type = ?*const fn (event: WifiEvent, user_data: ?*anyopaque) void;
 pub const response_event_type = ?*const fn (result: CommandResults, cmd: Commands, user_data: ?*anyopaque) void;
 
 pub const Config = struct {
@@ -419,8 +419,15 @@ pub fn EspAT(comptime driver_config: Config) type {
 
         fn wifi_response(self: *Self, aux_buffer: []const u8) DriverError!void {
             const wifi_event_slice = get_cmd_slice(aux_buffer[5..], &[_]u8{}, &[_]u8{'\r'});
-            const base_event = WiFi.get_WiFi_base_event(wifi_event_slice);
-            if (base_event == .WiFi_AP_CONNECTED) {
+            const base_event = WiFi.get_base_event(wifi_event_slice) catch return DriverError.INVALID_RESPONSE;
+            const event: WifiEvent = switch (base_event) {
+                .AP_DISCONNECTED => WifiEvent{ .AP_DISCONNECTED = {} },
+                .AP_CON_START => WifiEvent{ .AP_CON_START = {} },
+                .AP_CONNECTED => WifiEvent{ .AP_CONNECTED = {} },
+                else => unreachable,
+            };
+
+            if (base_event == .AP_CONNECTED) {
                 var pkg: TXEventPkg = .{};
                 const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}?{s}", .{ prefix, get_cmd_string(.NETWORK_IP), postfix }) catch unreachable;
                 pkg.cmd_len = cmd_slice.len;
@@ -428,7 +435,7 @@ pub fn EspAT(comptime driver_config: Config) type {
                 self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
             }
             if (self.on_WiFi_event) |callback| {
-                callback(base_event, null, self.WiFi_user_data);
+                callback(event, self.WiFi_user_data);
             }
         }
 
@@ -440,9 +447,15 @@ pub fn EspAT(comptime driver_config: Config) type {
             const event_slice = get_cmd_slice(aux_buffer[8..], &[_]u8{}, &[_]u8{':'});
             const data_start = event_slice.len + 10;
             const data_slice = get_cmd_slice(aux_buffer[data_start..], &[_]u8{}, &[_]u8{'"'});
-            const wifi_event = WiFi.get_WiFi_base_event(event_slice);
+            const base_event = WiFi.get_base_event(event_slice) catch return DriverError.INVALID_RESPONSE;
+            const event: WifiEvent = switch (base_event) {
+                .AP_GOT_GATEWAY => WifiEvent{ .AP_GOT_GATEWAY = data_slice },
+                .AP_GOT_IP => WifiEvent{ .AP_GOT_IP = data_slice },
+                .AP_GOT_MASK => WifiEvent{ .AP_GOT_MASK = data_slice },
+                else => unreachable,
+            };
             if (self.on_WiFi_event) |callback| {
-                callback(wifi_event, data_slice, self.WiFi_user_data);
+                callback(event, self.WiFi_user_data);
             }
             self.Wifi_state = .CONNECTED;
         }
@@ -450,32 +463,37 @@ pub fn EspAT(comptime driver_config: Config) type {
         fn WiFi_error(self: *Self, aux_buffer: []const u8) DriverError!void {
             self.busy_flag.WiFi = false;
             if (aux_buffer.len < 8) return DriverError.INVALID_RESPONSE;
-            const error_id = WiFi.get_WiFi_error_event(aux_buffer);
+            const error_id = WiFi.get_error_event(aux_buffer);
+            const event = WifiEvent{ .ERROR = error_id };
             if (self.on_WiFi_event) |callback| {
-                callback(error_id, null, self.WiFi_user_data);
+                callback(event, self.WiFi_user_data);
             }
         }
 
         fn WiFi_get_device_conn_mac(self: *Self, aux_buffer: []const u8) DriverError!void {
             if (aux_buffer.len < 34) return DriverError.INVALID_ARGS;
             const mac = aux_buffer[16..33];
+            const event = WifiEvent{ .STA_CONNECTED = mac };
             if (self.on_WiFi_event) |callback| {
-                callback(.WiFi_STA_DISCONNECTED, mac, self.WiFi_user_data);
+                callback(event, self.WiFi_user_data);
             }
         }
         fn WiFi_get_device_ip(self: *Self, aux_buffer: []const u8) DriverError!void {
             if (aux_buffer.len < 46) return DriverError.INVALID_RESPONSE;
+            const mac = get_cmd_slice(aux_buffer[13..], &[_]u8{}, &[_]u8{'"'});
             const ip = get_cmd_slice(aux_buffer[34..], &[_]u8{}, &[_]u8{'"'});
+            const event = WifiEvent{ .STA_GOT_IP = .{ .ip = ip, .mac = mac } };
             if (self.on_WiFi_event) |callback| {
-                callback(.WIFi_STA_GOT_IP, ip, self.WiFi_user_data);
+                callback(event, self.WiFi_user_data);
             }
         }
 
         fn WiFi_get_device_disc_mac(self: *Self, aux_buffer: []const u8) DriverError!void {
             if (aux_buffer.len < 37) return DriverError.INVALID_ARGS;
             const mac = aux_buffer[19..36];
+            const event = WifiEvent{ .STA_DISCONNECTED = mac };
             if (self.on_WiFi_event) |callback| {
-                callback(.WiFi_STA_DISCONNECTED, mac, self.WiFi_user_data);
+                callback(event, self.WiFi_user_data);
             }
         }
 
@@ -647,12 +665,12 @@ pub fn EspAT(comptime driver_config: Config) type {
         }
 
         fn WiFi_apply_AP_config(self: *Self, cmd: []const u8, config: WiFiAPConfig) DriverError!void {
-            const config_str = WiFi.set_WiFi_AP_config(&self.internal_aux_buffer, cmd, config) catch unreachable;
+            const config_str = WiFi.set_AP_config(&self.internal_aux_buffer, cmd, config) catch unreachable;
             self.TX_callback_handler(config_str, self.TX_RX_user_data);
         }
 
         fn WiFi_apply_STA_config(self: *Self, cmd: []const u8, config: WiFiSTAConfig) DriverError!void {
-            const config_str = WiFi.set_WiFi_STA_config(&self.internal_aux_buffer, cmd, config) catch unreachable;
+            const config_str = WiFi.set_STA_config(&self.internal_aux_buffer, cmd, config) catch unreachable;
             self.TX_callback_handler(config_str, self.TX_RX_user_data);
         }
 
@@ -921,7 +939,7 @@ pub fn EspAT(comptime driver_config: Config) type {
             } else if (self.Wifi_mode == WiFiDriverMode.NONE) {
                 return DriverError.WIFI_OFF;
             }
-            try WiFi.check_WiFi_STA_config(config);
+            try WiFi.check_STA_config(config);
 
             var pkg: TXEventPkg = .{};
             const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{ prefix, get_cmd_string(.WIFI_CONNECT) }) catch unreachable;
@@ -937,7 +955,7 @@ pub fn EspAT(comptime driver_config: Config) type {
             } else if (self.Wifi_mode == .NONE) {
                 return DriverError.WIFI_OFF;
             }
-            try WiFi.check_WiFi_AP_config(config);
+            try WiFi.check_AP_config(config);
 
             var pkg: TXEventPkg = .{};
             const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{ prefix, get_cmd_string(.WIFI_CONF) }) catch unreachable;

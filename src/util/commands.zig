@@ -1,9 +1,12 @@
+const std = @import("std");
+
 pub const Commands = enum(u8) {
     DUMMY,
     RESET,
     ECHO_OFF,
     ECHO_ON,
     SYSSTORE,
+    SYSLOG,
     IP_MUX,
     WIFI_SET_MODE,
     WIFI_CONNECT,
@@ -30,6 +33,7 @@ pub const COMMANDS_TOKENS = [_][]const u8{
     "ATE0",
     "ATE1",
     "SYSSTORE",
+    "SYSLOG",
     "CIPMUX",
     "CWMODE",
     "CWJAP",
@@ -72,4 +76,38 @@ pub fn get_cmd_slice(buffer: []const u8, start_tokens: []const u8, end_tokens: [
         }
     }
     return buffer[start..];
+}
+
+pub const CommandsErrorCode = enum(u32) {
+    ESP_AT_SUB_OK = 0x00,
+    ESP_AT_SUB_COMMON_ERROR = 0x01,
+    ESP_AT_SUB_NO_TERMINATOR = 0x02,
+    ESP_AT_SUB_NO_AT = 0x03,
+    ESP_AT_SUB_PARA_LENGTH_MISMATCH = 0x04,
+    ESP_AT_SUB_PARA_TYPE_MISMATCH = 0x05,
+    ESP_AT_SUB_PARA_NUM_MISMATCH = 0x06,
+    ESP_AT_SUB_PARA_INVALID = 0x07,
+    ESP_AT_SUB_PARA_PARSE_FAIL = 0x08,
+    ESP_AT_SUB_UNSUPPORT_CMD = 0x09,
+    ESP_AT_SUB_CMD_EXEC_FAIL = 0x0A,
+    ESP_AT_SUB_CMD_PROCESSING = 0x0B,
+    ESP_AT_SUB_CMD_OP_ERROR = 0x0C,
+    ESP_AT_UNKNOWN_ERROR = 0xFF,
+};
+
+pub const ResponseEvent = union(enum) {
+    Ok: void,
+    Fail: void,
+    Error: CommandsErrorCode,
+};
+
+pub fn parser_error(str: []const u8) CommandsErrorCode {
+    const error_slice = get_cmd_slice(str, &[_]u8{'x'}, &[_]u8{'\r'});
+    if (error_slice.len < 9) return .ESP_AT_UNKNOWN_ERROR;
+    const code = std.fmt.parseInt(u32, error_slice[1..], 16) catch return .ESP_AT_UNKNOWN_ERROR;
+    const bit_check: u32 = code & (0xFF << 24);
+    if (bit_check != 0x01) return .ESP_AT_UNKNOWN_ERROR;
+    const error_flag: u32 = code & (0xFF << 16);
+    if (error_flag > @intFromEnum(CommandsErrorCode.ESP_AT_SUB_CMD_OP_ERROR)) return .ESP_AT_UNKNOWN_ERROR;
+    return @enumFromInt(error_flag);
 }

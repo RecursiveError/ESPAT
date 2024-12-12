@@ -8,6 +8,8 @@ const get_cmd_slice = Commands_util.get_cmd_slice;
 const infix = Commands_util.infix;
 const prefix = Commands_util.prefix;
 const postfix = Commands_util.postfix;
+pub const CommandErrorCodes = Commands_util.CommandsErrorCode;
+pub const ReponseEvent = Commands_util.ResponseEvent;
 
 const WiFi = @import("util/WiFi.zig");
 pub const WiFiAPConfig = WiFi.WiFiAPConfig;
@@ -76,14 +78,12 @@ pub const WiFistate = enum {
     CONNECTED,
 };
 
-pub const CommandResults = enum(u8) { Ok, Error };
-
 pub const BusyBitFlags = packed struct {
-    Reset: bool,
-    Command: bool,
-    Socket: bool,
-    WiFi: bool,
-    Bluetooth: bool,
+    Reset: bool = false,
+    Command: bool = false,
+    Socket: bool = false,
+    WiFi: bool = false,
+    Bluetooth: bool = false,
 };
 
 pub const NetworkPackage = struct {
@@ -130,7 +130,7 @@ const NetworkToSend = struct {
 pub const TX_callback = *const fn (data: []const u8, user_data: ?*anyopaque) void;
 pub const RX_callback = ?*const fn (free_data: usize, user_data: ?*anyopaque) []u8;
 pub const WIFI_event_type = ?*const fn (event: WifiEvent, user_data: ?*anyopaque) void;
-pub const response_event_type = ?*const fn (result: CommandResults, cmd: Commands, user_data: ?*anyopaque) void;
+pub const response_event_type = ?*const fn (result: ReponseEvent, cmd: Commands, user_data: ?*anyopaque) void;
 
 pub const Config = struct {
     RX_size: usize = 2048,
@@ -142,7 +142,7 @@ pub const Config = struct {
 pub fn EspAT(comptime driver_config: Config) type {
     if (driver_config.RX_size < 128) @compileError("RX SIZE CANNOT BE LESS THAN 128 byte");
     if (driver_config.network_recv_size < 128) @compileError("NETWORK RECV CAN NO BE LESS THAN 128 bytes");
-    if (driver_config.TX_event_pool <= 5) @compileError(" NETWORK POOL SIZE CANNOT BE LESS THAN 5 events"); //
+    if (driver_config.TX_event_pool <= 10) @compileError(" NETWORK POOL SIZE CANNOT BE LESS THAN 10 events");
     return struct {
 
         // data types
@@ -153,6 +153,7 @@ pub fn EspAT(comptime driver_config: Config) type {
             .{ "OK", Self.ok_response },
             .{ "ERROR", Self.error_response },
             .{ "FAIL", Self.error_response },
+            .{ "EER", Self.parser_error_code },
             .{ ",CONNECT", Self.network_conn_event },
             .{ ",CLOSED", Self.network_closed_event },
             .{ "SEND", Self.network_send_event },
@@ -172,15 +173,10 @@ pub fn EspAT(comptime driver_config: Config) type {
         TX_wait_response: ?Commands = null,
         TX_callback_handler: TX_callback,
         RX_callback_handler: RX_callback,
-        busy_flag: BusyBitFlags = .{
-            .Reset = false,
-            .Command = false,
-            .Socket = false,
-            .WiFi = false,
-            .Bluetooth = false,
-        },
+        busy_flag: BusyBitFlags = .{},
         internal_aux_buffer: [driver_config.network_recv_size]u8 = undefined,
         internal_aux_buffer_pos: usize = 0,
+        last_error_code: CommandErrorCodes = .ESP_AT_UNKNOWN_ERROR,
 
         //Long data needs to be handled in a special state
         //to avoid locks on the executor while reading this data
@@ -252,7 +248,7 @@ pub fn EspAT(comptime driver_config: Config) type {
                     else => {},
                 }
                 if (self.on_cmd_response) |callback| {
-                    callback(.Ok, resp, self.Error_handler_user_data);
+                    callback(.{ .Ok = {} }, resp, self.Error_handler_user_data);
                 }
             }
             self.TX_wait_response = null;
@@ -276,10 +272,29 @@ pub fn EspAT(comptime driver_config: Config) type {
                     else => {},
                 }
                 if (self.on_cmd_response) |callback| {
-                    callback(.Error, resp, self.Error_handler_user_data);
+                    callback(.{ .Error = self.last_error_code }, resp, self.Error_handler_user_data);
+                }
+            }
+            self.last_error_code = .ESP_AT_UNKNOWN_ERROR; //reset error code handler
+            self.TX_wait_response = null;
+        }
+
+        fn fail_response(self: *Self, _: []const u8) DriverError!void {
+            const cmd = self.TX_wait_response;
+            self.busy_flag.Command = false;
+            if (cmd) |resp| {
+                if (self.on_cmd_response) |callback| {
+                    callback(.{ .Fail = {} }, resp, self.Error_handler_user_data);
                 }
             }
             self.TX_wait_response = null;
+        }
+
+        fn parser_error_code(self: *Self, aux_buffer: []const u8) DriverError!void {
+            if (aux_buffer.len < 20) return DriverError.INVALID_RESPONSE;
+            const error_code = Commands_util.parser_error(aux_buffer);
+            self.last_error_code = error_code;
+            if (error_code == .ESP_AT_UNKNOWN_ERROR) return DriverError.INVALID_RESPONSE;
         }
 
         fn wifi_response(self: *Self, aux_buffer: []const u8) DriverError!void {
@@ -642,6 +657,7 @@ pub fn EspAT(comptime driver_config: Config) type {
 
         //TODO; make a event pool just to init commands
         pub fn init_driver(self: *Self) !void {
+
             //clear buffers
             self.deinit_driver();
             self.RX_fifo.discard(self.RX_fifo.readableLength());
@@ -651,7 +667,6 @@ pub fn EspAT(comptime driver_config: Config) type {
             var pkg: TXEventPkg = .{};
             var cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}", .{ get_cmd_string(.DUMMY), postfix }) catch unreachable;
             pkg.cmd_len = cmd_slice.len;
-
             self.TX_fifo.writeItem(pkg) catch unreachable;
 
             //send RST request
@@ -663,6 +678,13 @@ pub fn EspAT(comptime driver_config: Config) type {
             cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}", .{ get_cmd_string(.ECHO_OFF), postfix }) catch unreachable;
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .ECHO_OFF;
+            pkg.Extra_data = .{ .Command = {} };
+            self.TX_fifo.writeItem(pkg) catch unreachable;
+
+            //enable error logs
+            cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1{s}", .{ prefix, get_cmd_string(.SYSLOG), postfix }) catch unreachable;
+            pkg.cmd_len = cmd_slice.len;
+            pkg.cmd_enum = .SYSLOG;
             pkg.Extra_data = .{ .Command = {} };
             self.TX_fifo.writeItem(pkg) catch unreachable;
 
@@ -684,6 +706,7 @@ pub fn EspAT(comptime driver_config: Config) type {
             pkg.cmd_enum = .WIFI_AUTOCONN;
             self.TX_fifo.writeItem(pkg) catch unreachable;
 
+            //set RECV mode to passive mode
             cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1{s}", .{ prefix, get_cmd_string(.NETWORK_RECV_MODE), postfix }) catch unreachable;
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .NETWORK_RECV_MODE;

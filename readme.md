@@ -5,6 +5,7 @@ AT command firmware for ESP modules (32/8266) is a simple and inexpensive way to
 
 ***Important***: This driver is still under development, invalid inputs may cause deadlocks or breaks
 
+__Recommended Espressif AT Firmware Version__:4.0.0.0
 __Minimum Espressif AT Firmware Version__: 2.2.0.0
 
 **Warning**: for Ai-thinker modules such as ESP-01 or ESP-12.
@@ -38,25 +39,40 @@ at the moment this Driver does not have a command to configure UART, you need to
     - [WiFi AP](#setting-up-the-module-as-an-access-point)
     - [WiFi STA](#setting-up-the-module-as-a-station)
     - [WiFi Events](#wifi-events)
+        - [WiFi errors](#wifi-error-table)
+    - [WiFi example](#wifi-example)
 - [Network Setup](#basic-network)
     - [Clients](#client)
     - [Server](#server)
     - [Network Events](#network-events)
+        - [event table](#network-event-table)
+    - [Network Example](#network-example)
 - [Error Handling](#error-handling)
 - [Examples](#examples)
 
 ### Porting
  
-To start using this driver, the first step is to create the driver with: `EspAT(RX_buffer_size, TX_pool_size).init(TX_callback, RX_callback, user_data)`  
+To start using this driver, the first step is to create the driver type with: `EspAT(Config)`
 
-- `RX_buffer_size`: Byte size of the driver's input buffer, minimum size: 50 bytes
-- `TX_pool_size`: Driver event pool size, minimum size: 5 events (amount of events used at driver startup)
+`Config` is a struct that defines the inner workings of the driver, it contains the following fields:
+- `RX_size`: input buffer size, minimum: 128 bytes, default value: 2046 bytes.
+- `TX_event_pool`: Event buffer size, minimum: 10 events, default value: 25.
+- `network_recv_size`: Network buffer size, minimum: 128 bytes, default value: 2046 bytes.
+- `network_binds`: Number of sockets supported by the module,  default value: 5.
+- `@"2.2.0.0_Support"`: Optional support for versions older than 4.0.0.0, default value: false.
 
-This process is necessary because this driver does not do any kind of dynamic allocation (this will probably change in future versions)
+with the type created, just initialize it with: `init(TX_callback,RX_callback, user_data)`
 
-All you need to do to port this driver is implement 2 callbacks:
+- `TX_callback(data: []const u8, user_data: ?*anyopaque) `void``: This function is responsible for sending the driver data to the module.
 
-- `RX_callback(free_size: usize, user_data: ?*anyopaque) []const u8`: this function responsible for sending the data to the driver 
+    - `data`: a slice containing the bytes that need to be sent to the module, note: you don't need to send all the data at once.
+
+    - `user_data`: An optional pointer to a user parameter
+
+    - `Returns`: `Void`
+
+            
+- `RX_callback(free_size: usize, user_data: ?*anyopaque) []const u8`: This is an optional function used by the driver to request information.
 
     - `free_size`: count of bytes that the driver can read, you can return any amount of bytes as long as it does not exceed that value (additional data will be lost)
 
@@ -64,24 +80,23 @@ All you need to do to port this driver is implement 2 callbacks:
 
     - `returns`: a slice containing the read bytes, this slice must live until the next call of this function, after which it can be released
 
-- `TX_callback(data: []const u8, user_data: ?*anyopaque) void`: This function is responsible for sending the driver data to the module.
+    Alternatively you can use the function: `notify([]const u8)` to notify data to the driver and leave RX_callback as null, before sending any data using this function it is necessary to check the amount of bytes available in the input buffer with: `get_rx_free_space()`
 
-    - `data`: a slice containing the bytes that need to be sent to the module, note: you don't need to send all the data at once.
-
-    - `user_data`: An optional pointer to a user parameter
-
-    - `Returns`: Void
+    `notify` returns the amount of bytes saved in the buffer
 
 - `user_data`: An optional pointer to a user parameter for TX and RX callbacks
 
- For the driver to work it is also necessary to call the function: `process` periodically, this function also returns internal driver errors. [TODO: Error Handling DOC]
+
+Once the driver type is initialized, the first thing you should do is call the function: `init_driver()`, This function will clear any commands in the event queue and load the driver's startup sequence. To safely turn off the driver, use: `deinit_driver()`
+
+To initialize the event handler, you should call the function `process()` periodically. This function returns internal driver errors.[TODO: Error Handling DOC]
 
  **Generic example**:
  ```zig
 
  const ESP_AT = @import("ESPAT");
 
- fn TX_callback(data: []const u8, user_data: ?*anyopaque) void {
+ fn TX_callback(data: []const u8, user_data: ?*anyopaque) `void` {
     if (user_data) |userdata| {
         const serial: *serial_type = @ptrCast(@alignCast(userdata));
         serial.write(data);
@@ -98,10 +113,11 @@ fn rx_callback(free_size: usize, user_data: ?*anyopaque) []u8 {
     return foo_buf[0..bytes_read];
 }
 
-fn main() !void {
+fn main() !`void` {
     var serial = Serial.lib;
-    var driver = ESP_AT.EspAT(4096, 20)
-        .init(TX_callback, rx_callback, &serial);
+    var driver = ESP_AT.EspAT(.{}).init(TX_callback, rx_callback, &serial);
+    defer driver.deinit_driver();
+        try driver.init_driver()
     while(true){
         my_drive.process() catch |err| {
             _ = std.log.err("Driver got error: {}", .{err});
@@ -140,35 +156,71 @@ To save the settings and enable STA mode, pass the configuration struct to the f
 
 all WiFi events are handled by a single handler, which can be set with: `set_WiFi_event_handler(callback: WIFI_event_type, user_data: ?*anyopaque)`:
 
-- `WIFI_event_type`: `fn on_WiFi_event(event: WifiEvent, data: ?[]const u8, user_data: ?*anyopaque) void`:
-    - `event`: enum of WiFi events
-    - `data`: some WiFi events may return additional data
+- `WIFI_event_type`: `fn on_WiFi_event(event: WifiEvent, user_data: ?*anyopaque) `void``:
+    - `event`: A tagged union containing the event tag and possible event data.
     - `user_data`: optional pointer to a user parameter
 - `user_data`: optional pointer to a user parameter
 
 WiFi event table
 
-| **EVENT**   | **return data** | **Info**        |
+| **EVENT**   | **data** | **Info**        |
 |------------|-------------|------------------------|
-|WiFi_AP_CON_START|❌|WiFi has started a connection attempt.|
-|WiFi_AP_CONNECTED|❌|WiFi connected to an access point, waiting for IP.|
-|WiFi_AP_GOT_MASK|✅|WiFi received the network mask from the Access Point, returns a string with the network mask.|
-|WiFi_AP_GOT_IP|✅|WiFi received an IP from the Access point, returns a string with the IP.|
-|WiFi_AP_GOT_GATEWAY|✅|WiFi received the gateway IP of the Access point, returns a string with the gateway IP.|
-|WiFi_AP_DISCONNECTED|❌|WiFi disconnected from an access point.|
-|WiFi_STA_CONNECTED|✅|A device has connected to the module's access point. returns the MAC address of the device.|
-|WIFi_STA_GOT_IP|✅|a device has been assigned an IP address from the module, returns the IP address of the device.|
-|WiFi_STA_DISCONNECTED|✅| a device disconnected from the module's access point, returns the device's MAC address.|
-|WiFi_ERROR_TIMEOUT|❌|Connection to an access point took too long to respond.|
-|WiFi_ERROR_PASSWORD|❌|Incorrect WiFi password.|
-|WiFi_ERROR_INVALID_SSID|❌|The module was not able to find the specified SSID.|
-|WiFi_ERROR_CONN_FAIL|❌|The access point refused the connection.|
-|WiFi_ERROR_UNKNOWN|❌|The module returned an unknown error code.|
+|AP_CON_START|`void`|WiFi has started a connection attempt.|
+|AP_CONNECTED|`void`|WiFi connected to an access point, waiting for IP.|
+|AP_GOT_MASK|`[]const u8`|WiFi received the network mask from the Access Point, returns a string with the network mask.|
+|AP_GOT_IP|`[]const u8`|WiFi received an IP from the Access point, returns a string with the IP.|
+|AP_GOT_GATEWAY|`[]const u8`|WiFi received the gateway IP of the Access point, returns a string with the gateway IP.|
+|AP_DISCONNECTED|`void`|WiFi disconnected from an access point.|
+|STA_CONNECTED|`[]const u8`|A device has connected to the module's access point. returns the MAC address of the device.|
+|STA_GOT_IP|`DeviceInfo`|a device has been assigned an IP address from the module, returns the MAC and IP address of the device.|
+|STA_DISCONNECTED|`[]const u8`| a device disconnected from the module's access point, returns the device's MAC address.|
+|ERROR|`ErrorEvent`|An error occurred during the connection contain the reason for the error. [error table](#wifi-error-table)| 
 
+#### WiFi Error Table
+| **ERROR**  | **Info**|
+|------------|---------|
+|Timeout| Connection to an access point took too long to respond.|
+|Password|Incorrect WiFi password.|
+|SSID| The module was not able to find the specified SSID.|
+|FAIL| The access point refused the connection.|
+|Unknown| The module returned an unknown error code.|
 
 To disconnect from WiFi, use: `WiFi_disconnect()`
 
 (note: you don't need to use this function to switch WiFi networks)
+
+#### WiFi Example
+```zig
+const Driver = @import("ESPAT");
+...
+fn WiFi_callback(event: Driver.WifiEvent, user_data: ?*anyopaque) void {
+    _ = user_data;
+    switch (event) {
+        .AP_DISCONNECTED => {
+            std.log.info("WiFi disconnect from {s}", .{wifi_ssid});
+        },
+        .AP_CON_START => {
+            std.log.info("WiFi conn start", .{});
+        },
+        .AP_CONNECTED => {
+            std.log.info("WiFi connect waiting for IP", .{});
+        },
+        .AP_GOT_IP => |ip| {
+            std.log.info("WiFi got ip {s}", .{ip});
+        },
+        else => {
+            std.log.info("WiFi got event {any}", .{event});
+        },
+    }
+}
+...
+fn main() !void {
+    ...
+    my_drive.set_WiFi_event_handler(WiFi_callback, null);
+    ...
+}
+```
+
 
 ### Basic network
 
@@ -201,16 +253,17 @@ if a client socket is available, this function will associate the callback and t
 to make a request you must create a configuration struct:`NetworkConnectPkg`
 
 This struct gets:
-- remote_host = a string containing the IP or domain of the host
-- remote_port = the host port
-- config = Request type configuration:
-    - TCP/SSL:
-        - keep_alive = keep-alive timeout
-    - udp:
-        - local_port = optional local port 
-        mode = udp mode [(refer to ESPAT Doc)](https://docs.espressif.com/projects/esp-at/en/release-v4.0.0.0/esp32/AT_Command_Set/TCP-IP_AT_Commands.html#id11)
+- `remote_host` = a string containing the IP or domain of the host
+- `remote_port` = the host port
+- `config` = Request type configuration:
+    - `TCP`/`SSL`:
+        - `keep_alive` = keep-alive timeout
+    - `UDP`:
+        - `local_port` = optional local port 
+        `mode` = udp mode [(refer to ESPAT Doc)](https://docs.espressif.com/projects/esp-at/en/release-v4.0.0.0/esp32/AT_Command_Set/TCP-IP_AT_Commands.html#id11)
 
 With this struct configured, call the function: `connect(id: usize, config: NetworkConnectPkg)` passing the id and the configuration.
+
 now all communication will happen through the callback associated with the socket. [Network events](#network-events)
 
 To return a socket, use the function: `release(id: usize)`, this function will clear all data associated with the Socket and return the ID to the list of available Sockets
@@ -221,7 +274,9 @@ To create a server call function: `create_server(port: u16, server_type: Network
 - port = the port that the server will listen on
 - server_type = the type of server, servers can be of 3 types: `.default` (default firmware configuration), `.TCP` and `.SSL`.
 
-- event_callback and user_data = a Clientcallback is an optional user parameter, all server connections will share the same callback and parameters.
+(The ESP-AT does not support creating UDP servers, but it is possible to receive data via UDP by initializing a UDP client where the `local_port` parameter is the port on which the device will listen for UDP packets.)
+
+- event_callback and user_data = a Clientcallback and an optional user parameter, all server connections will share the same callback and parameters.
 
 all communication will happen through the event_callback. [Network events](#network-events)
 
@@ -229,19 +284,66 @@ all communication will happen through the event_callback. [Network events](#netw
 To delete the server use the function: `delete_server()`
 
 #### Network Events
-both clients and servers use ClientCallbacks for communication, a ClientCallback is just: `(client: EspAT(rx_size,tx_size).Client, user_data: ?*anyopaque) void`
+both clients and servers use ClientCallbacks for communication, a ClientCallback is just: `(client: ESPAT.Client, user_data: ?*anyopaque) `void``
 
 The Struct Client contains all the information needed to manage the connection:
 - `id` = the connection ID
-- `event` = the current NetworkEvent of the connection,these NetworkEvent can be:
-    - `.Connected`: the current ID initiated a connection.
-    - `.Closed`: the current ID closed the connection
-    - `.ReciveData`: the current ID received data, this data is available in `rev`. (**Note**:data can be received in multiple packets, due to the behavior of ESPAT)
-    - `.SendDataComplete`: the current ID sent data successfully, returns the data sent in `rev`.
-    - `.SendDataFail`: the current ID failed to send data, returns the data sent in `rev`.
-- `rev` = optional event data
+- `event` = A tagged union containing the tag of each event and the event data. [Event Table](#network-event-table)
+- `accept()` = makes a request for the data saved in the id buffer, this function always tries to read as much as allowed by the `network_recv_size` setting. 
 - `close()` = function to close the connection
-- `send()` = function to send data. (**Note**: the data should live until it is returned by events: `.SendDataComplete` and  `.SendDataFail` ).
+- `send()` = function to send data. (**Note**: the data should live until it is returned by event: `.SendDataComplete` or  `.SendDataCancel` ).
+
+##### Network Event Table
+
+| **Event**   | **Data** | **info**|
+|-------------|-----------------|------------------|
+|Connected|`Void`|id has started a connection.|
+|Closed|`void`|The id closed a connection.|
+|DataReport|`usize`| The id has data on hold, use `accept()` to receive or `close()` to close and clear the connection.|
+|ReadData| `[]const u8`| data read from the buffer.|
+|SendDataComplete| `[]const u8`| data has been sent, wait for response. |
+|SendDataCancel| `[]const u8`| data send has been canceled. |
+|SendDataOk| `void`| data was successfully sent to ID. |
+|SendDataFail| `void`| sending data to ID failed. |
+
+#### Network Example
+```zig
+const Driver = @import("ESPAT");
+const Client = Driver.Client;
+...
+fn client_callback(client: Client, user_data: ?*anyopaque) void {
+    _ = user_data;
+    switch (client.event) {
+        .Connected => {
+            client.send("teste\r\n") catch |err| {
+                _ = std.log.info("client: got error {}, on bind {}", .{ err, client.id });
+            };
+        },
+        .DataReport => |len| {
+            _ = std.log.info("client: have {} bytes in queue", .{len});
+            client.accept() catch |err| {
+                _ = std.log.info("client: got error {}, on bind {}", .{ err, client.id });
+            };
+        },
+        .ReadData => |data| {
+            _ = std.log.info("client: LEN {} | DATA: {s}", .{ data.len, data });
+            client.close() catch |err| {
+                _ = std.log.info("client: close got error {}", .{err});
+            };
+        },
+        else => {
+            std.log.info("CLIENT EVENT: {any}", .{client.event});
+        },
+    }
+}
+....
+fn main() !void {
+    ...
+    const id = try my_drive.bind(client_callback, null);
+    try my_drive.connect(id, config);
+    ...
+}
+```
 
 
 

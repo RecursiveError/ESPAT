@@ -46,7 +46,7 @@ pub const COMMANDS_TOKENS = [_][]const u8{
     "CIPSTA",
     "CIPSERVERMAXCONN",
     "CIPSERVER",
-    "CIPRECVMODE",
+    "CIPRECVMTYPE",
     "CIPRECVDATA",
     "CIPDINFO",
 };

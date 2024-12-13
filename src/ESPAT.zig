@@ -137,12 +137,13 @@ pub const Config = struct {
     TX_event_pool: usize = 25,
     network_recv_size: usize = 2048,
     network_binds: usize = 5,
+    @"2.2.0.0_Support": bool = false,
 };
 
 pub fn EspAT(comptime driver_config: Config) type {
     if (driver_config.RX_size < 128) @compileError("RX SIZE CANNOT BE LESS THAN 128 byte");
     if (driver_config.network_recv_size < 128) @compileError("NETWORK RECV CAN NO BE LESS THAN 128 bytes");
-    if (driver_config.TX_event_pool <= 10) @compileError(" NETWORK POOL SIZE CANNOT BE LESS THAN 10 events");
+    if (driver_config.TX_event_pool < 10) @compileError(" NETWORK POOL SIZE CANNOT BE LESS THAN 10 events");
     return struct {
 
         // data types
@@ -214,10 +215,11 @@ pub fn EspAT(comptime driver_config: Config) type {
             }
         }
 
-        pub fn notify(self: *Self, data: []const u8) void {
+        pub fn notify(self: *Self, data: []const u8) usize {
             const free_space = self.get_rx_free_space();
             const slice = if (data.len > free_space) data[0..free_space] else data;
             self.RX_fifo.write(slice) catch unreachable;
+            return slice.len;
         }
 
         fn get_cmd_type(self: *Self, aux_buffer: []const u8) DriverError!void {
@@ -705,9 +707,10 @@ pub fn EspAT(comptime driver_config: Config) type {
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .WIFI_AUTOCONN;
             self.TX_fifo.writeItem(pkg) catch unreachable;
+            const passive_mode_cmd = if (driver_config.@"2.2.0.0_Support") "CIPRECVMODE" else get_cmd_string(.NETWORK_RECV_MODE);
 
             //set RECV mode to passive mode
-            cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1{s}", .{ prefix, get_cmd_string(.NETWORK_RECV_MODE), postfix }) catch unreachable;
+            cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1{s}", .{ prefix, passive_mode_cmd, postfix }) catch unreachable;
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .NETWORK_RECV_MODE;
             self.TX_fifo.writeItem(pkg) catch unreachable;
@@ -722,11 +725,6 @@ pub fn EspAT(comptime driver_config: Config) type {
             }
             //TODO: Clear all WiFi data Here
             self.machine_state = .OFF;
-        }
-
-        //TODO: deinit all data here
-        pub fn reset(self: *Self) DriverError!void {
-            self.machine_state = .init;
         }
 
         pub fn set_response_event_handler(self: *Self, callback: response_event_type, user_data: ?*anyopaque) void {

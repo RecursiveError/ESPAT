@@ -28,7 +28,7 @@ pub const Commands = enum(u8) {
 
 //This is not necessary since the user cannot send commands directly, but useful for debug
 pub const COMMANDS_TOKENS = [_][]const u8{
-    ".",
+    "AT",
     "RST",
     "ATE0",
     "ATE1",
@@ -46,7 +46,7 @@ pub const COMMANDS_TOKENS = [_][]const u8{
     "CIPSTA",
     "CIPSERVERMAXCONN",
     "CIPSERVER",
-    "CIPRECVMTYPE",
+    "CIPRECVTYPE",
     "CIPRECVDATA",
     "CIPDINFO",
 };
@@ -103,11 +103,12 @@ pub const ResponseEvent = union(enum) {
 
 pub fn parser_error(str: []const u8) CommandsErrorCode {
     const error_slice = get_cmd_slice(str, &[_]u8{'x'}, &[_]u8{'\r'});
-    if (error_slice.len < 9) return .ESP_AT_UNKNOWN_ERROR;
+    if (error_slice.len < 8) return .ESP_AT_UNKNOWN_ERROR;
     const code = std.fmt.parseInt(u32, error_slice[1..], 16) catch return .ESP_AT_UNKNOWN_ERROR;
-    const bit_check: u32 = code & (0xFF << 24);
+    const bit_check: u32 = (code >> 24 & (0xFF));
+
     if (bit_check != 0x01) return .ESP_AT_UNKNOWN_ERROR;
-    const error_flag: u32 = code & (0xFF << 16);
+    const error_flag: u32 = code >> 16 & (0xFF);
     if (error_flag > @intFromEnum(CommandsErrorCode.ESP_AT_SUB_CMD_OP_ERROR)) return .ESP_AT_UNKNOWN_ERROR;
     return @enumFromInt(error_flag);
 }

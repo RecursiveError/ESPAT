@@ -154,7 +154,7 @@ pub fn EspAT(comptime driver_config: Config) type {
             .{ "OK", Self.ok_response },
             .{ "ERROR", Self.error_response },
             .{ "FAIL", Self.error_response },
-            .{ "EER", Self.parser_error_code },
+            .{ "ERR", Self.parser_error_code },
             .{ ",CONNECT", Self.network_conn_event },
             .{ ",CLOSED", Self.network_closed_event },
             .{ "SEND", Self.network_send_event },
@@ -537,16 +537,22 @@ pub fn EspAT(comptime driver_config: Config) type {
                     if (data == '\n') {
                         if (self.internal_aux_buffer_pos > 3) {
                             if (self.internal_aux_buffer[0] == '+') {
-                                try self.get_cmd_data_type(self.internal_aux_buffer[0..self.internal_aux_buffer_pos]);
+                                self.get_cmd_data_type(self.internal_aux_buffer[0..self.internal_aux_buffer_pos]) catch |err| {
+                                    self.internal_aux_buffer_pos = 0;
+                                    return err;
+                                };
                                 if (self.long_data_request) return;
                             } else {
-                                try self.get_cmd_type(self.internal_aux_buffer[0..self.internal_aux_buffer_pos]);
+                                self.get_cmd_type(self.internal_aux_buffer[0..self.internal_aux_buffer_pos]) catch |err| {
+                                    self.internal_aux_buffer_pos = 0;
+                                    return err;
+                                };
                             }
                         }
                         self.internal_aux_buffer_pos = 0;
                     } else if (data == '>') {
-                        try self.network_send_data();
                         self.internal_aux_buffer_pos = 0;
+                        try self.network_send_data();
                     }
                 } else {
                     break;
@@ -683,17 +689,17 @@ pub fn EspAT(comptime driver_config: Config) type {
             pkg.Extra_data = .{ .Command = {} };
             self.TX_fifo.writeItem(pkg) catch unreachable;
 
+            //disable sysstore
+            cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=0{s}", .{ prefix, get_cmd_string(.SYSSTORE), postfix }) catch unreachable;
+            pkg.cmd_len = cmd_slice.len;
+            pkg.cmd_enum = .SYSSTORE;
+            self.TX_fifo.writeItem(pkg) catch unreachable;
+
             //enable error logs
             cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1{s}", .{ prefix, get_cmd_string(.SYSLOG), postfix }) catch unreachable;
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .SYSLOG;
             pkg.Extra_data = .{ .Command = {} };
-            self.TX_fifo.writeItem(pkg) catch unreachable;
-
-            //disable sysstore
-            cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=0{s}", .{ prefix, get_cmd_string(.SYSSTORE), postfix }) catch unreachable;
-            pkg.cmd_len = cmd_slice.len;
-            pkg.cmd_enum = .SYSSTORE;
             self.TX_fifo.writeItem(pkg) catch unreachable;
 
             //enable multi-conn
@@ -707,10 +713,13 @@ pub fn EspAT(comptime driver_config: Config) type {
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .WIFI_AUTOCONN;
             self.TX_fifo.writeItem(pkg) catch unreachable;
-            const passive_mode_cmd = if (driver_config.@"2.2.0.0_Support") "CIPRECVMODE" else get_cmd_string(.NETWORK_RECV_MODE);
+            if (driver_config.@"2.2.0.0_Support") {
+                cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1{s}", .{ prefix, "CIPRECVMODE", postfix }) catch unreachable;
+            } else {
+                cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d},1{s}", .{ prefix, get_cmd_string(.NETWORK_RECV_MODE), driver_config.network_binds, postfix }) catch unreachable;
+            }
 
             //set RECV mode to passive mode
-            cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1{s}", .{ prefix, passive_mode_cmd, postfix }) catch unreachable;
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .NETWORK_RECV_MODE;
             self.TX_fifo.writeItem(pkg) catch unreachable;

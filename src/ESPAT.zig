@@ -638,29 +638,26 @@ pub fn EspAT(comptime driver_config: Config) type {
             self.long_data_request = false;
             const id = self.long_data.id;
             const to_read = self.long_data.to_read;
-            const offset = self.long_data.data_offset;
+            var offset = self.long_data.data_offset;
             const start = self.long_data.start_index;
             const rev_data = offset - start; //offset is always at least 3 nytes more than start
-            if (rev_data >= to_read) {
-                if (id >= self.Network_binds.len) {
-                    //invalid bind, reset aux buffer, go back to IDLE
-                    self.internal_aux_buffer_pos = 0;
-                    self.machine_state = .IDLE;
-                    return DriverError.INVALID_RESPONSE;
-                }
-                if (self.Network_binds[id]) |*bd| {
-                    bd.client.event = .{ .ReadData = self.internal_aux_buffer[start..offset] };
-                    bd.notify();
-                }
-                self.internal_aux_buffer_pos = 0;
-                self.machine_state = .IDLE;
-            } else {
+            if (rev_data < to_read) {
                 const remain = to_read - rev_data;
                 const read = offset + remain;
                 const rev = self.RX_fifo.read(self.internal_aux_buffer[offset..read]);
                 const new_offset = offset + rev;
                 self.long_data.data_offset = new_offset;
+                if ((new_offset - start) < to_read) {
+                    return;
+                }
+                offset = new_offset;
             }
+            if (self.Network_binds[id]) |*bd| {
+                bd.client.event = .{ .ReadData = self.internal_aux_buffer[start..offset] };
+                bd.notify();
+            }
+            self.internal_aux_buffer_pos = 0;
+            self.machine_state = .IDLE;
         }
 
         //TODO; make a event pool just to init commands

@@ -25,6 +25,11 @@ pub const NetworkEvent = union(enum) {
     SendDataFail: void,
 };
 
+pub const RecvMode = enum(u1) {
+    active,
+    passive,
+};
+
 pub const NetworkHandlerState = enum {
     None,
     Connected,
@@ -52,7 +57,7 @@ pub const NetworkUDPModes = enum {
 };
 
 pub const NetworkUDPConn = struct {
-    local_port: ?u16 = null,
+    local_port: u16,
     mode: NetworkUDPModes = .Unchanged,
 };
 pub const NetWorkConnectType = union(enum) {
@@ -60,17 +65,26 @@ pub const NetWorkConnectType = union(enum) {
     ssl: NetworkTCPConn,
     udp: NetworkUDPConn,
 };
-pub const NetworkConnectPkg = struct {
+pub const ConnectConfig = struct {
+    recv_mode: RecvMode,
     remote_host: []const u8,
     remote_port: u16,
     config: NetWorkConnectType,
+};
+
+pub const ServerConfig = struct {
+    recv_mode: RecvMode,
+    callback: ClientCallback,
+    user_data: ?*anyopaque,
+    server_type: NetworkHandlerType,
+    port: u16,
 };
 
 pub const NetworkPackageType = union(enum) {
     NetworkSendPkg: NetworkSendPkg,
     NetworkAcceptPkg: void,
     NetworkClosePkg: void,
-    NetworkConnectPkg: NetworkConnectPkg,
+    ConnectConfig: ConnectConfig,
 };
 
 pub const NetworkSendEvent = enum {
@@ -91,7 +105,7 @@ pub fn get_send_event(str: []const u8) !NetworkSendEvent {
     return error.EventNotFound;
 }
 
-pub fn set_tcp_config(out_buffer: []u8, id: usize, args: NetworkConnectPkg, tcp_conf: NetworkTCPConn) ![]u8 {
+pub fn set_tcp_config(out_buffer: []u8, id: usize, args: ConnectConfig, tcp_conf: NetworkTCPConn) ![]u8 {
     var cmd_slice: []const u8 = undefined;
     var cmd_size: usize = 0;
     cmd_slice = try std.fmt.bufPrint(out_buffer, "{s}{s}={d},\"TCP\",\"{s}\",{d},{d}{s}", .{
@@ -107,58 +121,95 @@ pub fn set_tcp_config(out_buffer: []u8, id: usize, args: NetworkConnectPkg, tcp_
     return out_buffer[0..cmd_size];
 }
 
-pub fn set_udp_config(out_buffer: []u8, id: usize, args: NetworkConnectPkg, udp_conf: NetworkUDPConn) ![]u8 {
+pub fn set_udp_config(out_buffer: []u8, id: usize, args: ConnectConfig, udp_conf: NetworkUDPConn) ![]u8 {
     var cmd_slice: []const u8 = undefined;
     var cmd_size: usize = 0;
-    cmd_slice = try std.fmt.bufPrint(out_buffer, "{s}{s}={d},\"UDP\",\"{s}\",{d}", .{
+    cmd_slice = try std.fmt.bufPrint(out_buffer, "{s}{s}={d},\"UDP\",\"{s}\",{d},{d},{d}{s}", .{
         prefix,
         get_cmd_string(.NETWORK_CONNECT),
         id,
         args.remote_host,
         args.remote_port,
+        udp_conf.local_port,
+        @intFromEnum(udp_conf.mode),
+        postfix,
     });
     cmd_size = cmd_slice.len;
-    if (udp_conf.local_port) |port| {
-        cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], ",{d}", .{port});
-    } else {
-        cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], ",", .{});
-    }
-    cmd_size += cmd_slice.len;
-    cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], ",{d}{s}", .{ @intFromEnum(udp_conf.mode), postfix });
-    cmd_size += cmd_slice.len;
     return out_buffer[0..cmd_size];
 }
 
-pub const ip_data = struct {
+const IpDataInfo = struct {
+    remote_host: []const u8,
+    remote_port: u16,
+    start_index: usize,
+};
+
+pub const IpData = struct {
     id: usize,
     data_len: usize,
-    //remote_host: []const u8 TODO
-
+    data_info: ?IpDataInfo = null,
 };
-pub fn paser_ip_data(str: []const u8) !ip_data {
-    var slices = std.mem.split(u8, str, ",");
-    _ = slices.next(); //skip first arg (+IPD,)
 
-    var id: usize = 0;
-    var data_size: usize = 0;
+pub fn paser_ip_data(str: []const u8) !IpData {
+    //no check to invalid size, this func is only call when "+IPD," get into the buffer
+    var slices = std.mem.split(u8, str[5..], ",");
+    const id_str = slices.next();
+    const data_str = slices.next();
+    const remote_host_str = slices.next();
+    const remote_port_str = slices.next();
 
-    //get id
-    if (slices.next()) |recive_id| {
-        id = std.fmt.parseInt(usize, recive_id, 10) catch return error.InvalidId;
-    } else {
-        return error.InvalidPkg;
-    }
+    if (id_str == null) return error.InvalidPkg;
+    if (data_str == null) return error.InvalidPkg;
 
-    //get data len
-    if (slices.next()) |data_str| {
-        const data_size_slice = get_cmd_slice(data_str, &[_]u8{}, &[_]u8{'\r'});
-        data_size = std.fmt.parseInt(usize, data_size_slice, 10) catch return error.invalidDataLen;
-    } else {
-        return error.InvalidPkg;
-    }
-    return ip_data{
+    const id = std.fmt.parseInt(usize, id_str.?, 10) catch return error.InvalidId;
+
+    const data_size_slice = get_cmd_slice(data_str.?, &[_]u8{}, &[_]u8{'\r'});
+    const data_size = std.fmt.parseInt(usize, data_size_slice, 10) catch return error.InvalidDataLen;
+
+    var data = IpData{
         .id = id,
         .data_len = data_size,
+    };
+
+    if (remote_host_str) |host| {
+        if (remote_port_str) |port| {
+            const data_host_name = get_cmd_slice(host[1..], &[_]u8{}, &[_]u8{'"'});
+            const port_slice = get_cmd_slice(port, &[_]u8{}, &[_]u8{':'});
+            const portnum = std.fmt.parseInt(u16, port_slice, 10) catch return error.InvalidPort;
+            const start = id_str.?.len + data_str.?.len + host.len + port_slice.len + 9;
+            data.data_info = IpDataInfo{
+                .remote_host = data_host_name,
+                .remote_port = portnum,
+                .start_index = start,
+            };
+        }
+    }
+
+    return data;
+}
+
+pub fn parse_recv_data(str: []const u8) !IpData {
+    var slices = std.mem.split(u8, str[13..], ",");
+    const data_str = slices.next();
+    const host_str = slices.next();
+    const port_str = slices.next();
+
+    for (&[_]?[]const u8{ data_str, host_str, port_str }) |value| {
+        if (value == null) return error.InvalidPkg;
+    }
+    const data_len = std.fmt.parseInt(usize, data_str.?, 10) catch return error.InvalidPort;
+    const host = get_cmd_slice(host_str.?[1..], &[_]u8{}, &[_]u8{'"'});
+    const port = std.fmt.parseInt(u16, port_str.?, 10) catch return error.InvalidPort;
+    const start = 16 + data_str.?.len + host_str.?.len + port_str.?.len;
+
+    return .{
+        .id = 255,
+        .data_len = data_len,
+        .data_info = .{
+            .remote_host = host,
+            .remote_port = port,
+            .start_index = start,
+        },
     };
 }
 
@@ -171,6 +222,8 @@ pub const Client = struct {
     id: usize,
     driver: *anyopaque,
     event: NetworkEvent,
+    remote_host: ?[]const u8 = null,
+    remote_port: ?u16 = null,
 
     send_fn: *const fn (ctx: *anyopaque, id: usize, data: []const u8) ClientError!void,
     close_fn: *const fn (ctx: *anyopaque, id: usize) ClientError!void,

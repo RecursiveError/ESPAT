@@ -137,7 +137,6 @@ pub const Config = struct {
     TX_event_pool: usize = 25,
     network_recv_size: usize = 2048,
     network_binds: usize = 5,
-    @"2.2.0.0_Support": bool = false,
 };
 
 pub fn EspAT(comptime driver_config: Config) type {
@@ -739,13 +738,6 @@ pub fn EspAT(comptime driver_config: Config) type {
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .WIFI_AUTOCONN;
             self.TX_fifo.writeItem(pkg) catch unreachable;
-            if (driver_config.@"2.2.0.0_Support") {
-                cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1{s}", .{ prefix, "CIPRECVMODE", postfix }) catch unreachable;
-                //set RECV mode to passive mode
-                pkg.cmd_len = cmd_slice.len;
-                pkg.cmd_enum = .NETWORK_RECV_MODE;
-                self.TX_fifo.writeItem(pkg) catch unreachable;
-            }
 
             self.machine_state = Drive_states.IDLE;
         }

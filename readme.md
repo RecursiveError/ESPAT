@@ -1,21 +1,22 @@
 # ESPAT
-simple driver made in Zig to use ESP(32/8266) boards as WiFi module via AT command firmware
+simple driver made in Zig to use ESP32 boards as WiFi module via AT command firmware
 
 AT command firmware for ESP modules (32/8266) is a simple and inexpensive way to add wireless connection to embedded devices, although it is more limited than conventional RF modules, ESP modules abstract much of the network stack, allowing their use in more limited devices.
 
 ***Important***: This driver is still under development, invalid inputs may cause deadlocks or breaks
 
 __Recommended Espressif AT Firmware Version__:4.0.0.0
-__Minimum Espressif AT Firmware Version__: 2.2.0.0
+__Minimum Espressif AT Firmware Version__: 3.4.0.0
 
-**Warning**: for Ai-thinker modules such as ESP-01 or ESP-12.
-Boantong AT firmware (AT =< 1.7) is not supported, and Espressif firmware (2.2.0.0) is not compatible with the pin layout of these boards, to use them it is necessary to customize the firmware to ESP8266, if you don't know how to do this follow this guide: [custom pin AT](docs/customAT.md)
+**Warning**: ~~for Ai-thinker modules such as ESP-01 or ESP-12.
+Boantong AT firmware (AT =< 1.7) is not supported, and Espressif firmware (2.2.0.0) is not compatible with the pin layout of these boards, to use them it is necessary to customize the firmware to ESP8266, if you don't know how to do this follow this guide: [custom pin AT](docs/customAT.md)~~
 
 ## Supported Features
 - [x] WiFi STA/AP/AP+STA modes
 - [x] TCP/UDP Client
 - [x] TCP Server
 - [x] Server + Client mode
+- [x] passive and active recv mode
 
 ## Others
 Features that may be implemented

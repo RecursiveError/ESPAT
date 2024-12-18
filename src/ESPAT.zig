@@ -94,6 +94,9 @@ pub const NetworkPackage = struct {
 pub const WiFiPackage = union(enum) {
     AP_conf_pkg: WiFiAPConfig,
     STA_conf_pkg: WiFiSTAConfig,
+    static_ap_config: WiFi.StaticIp,
+    dhcp_config: WiFi.DHCPConfig,
+    MAC_config: []const u8,
 };
 
 pub const BluetoothPackage = struct {
@@ -314,9 +317,9 @@ pub fn EspAT(comptime driver_config: Config) type {
 
             if (base_event == .AP_CONNECTED) {
                 var pkg: TXEventPkg = .{};
-                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}?{s}", .{ prefix, get_cmd_string(.NETWORK_IP), postfix }) catch unreachable;
+                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}?{s}", .{ prefix, get_cmd_string(.WIFI_STA_IP), postfix }) catch unreachable;
                 pkg.cmd_len = cmd_slice.len;
-                pkg.cmd_enum = .NETWORK_IP;
+                pkg.cmd_enum = .WIFI_STA_IP;
                 self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
             }
             if (self.on_WiFi_event) |callback| {
@@ -365,7 +368,7 @@ pub fn EspAT(comptime driver_config: Config) type {
         }
         fn WiFi_get_device_ip(self: *Self, aux_buffer: []const u8) DriverError!void {
             if (aux_buffer.len < 46) return DriverError.INVALID_RESPONSE;
-            const mac = get_cmd_slice(aux_buffer[13..], &[_]u8{}, &[_]u8{'"'});
+            const mac = get_cmd_slice(aux_buffer[14..], &[_]u8{}, &[_]u8{'"'});
             const ip = get_cmd_slice(aux_buffer[34..], &[_]u8{}, &[_]u8{'"'});
             const event = WifiEvent{ .STA_GOT_IP = .{ .ip = ip, .mac = mac } };
             if (self.on_WiFi_event) |callback| {
@@ -509,12 +512,17 @@ pub fn EspAT(comptime driver_config: Config) type {
             }
         }
 
-        fn WiFi_apply_AP_config(self: *Self, cmd: []const u8, config: WiFiAPConfig) DriverError!void {
+        fn apply_WiFi_mac(self: *Self, cmd_data: []const u8, mac: []const u8) void {
+            const config = WiFi.set_mac(&self.internal_aux_buffer, cmd_data, mac) catch unreachable;
+            self.TX_callback_handler(config, self.TX_RX_user_data);
+        }
+
+        fn WiFi_apply_AP_config(self: *Self, cmd: []const u8, config: WiFiAPConfig) void {
             const config_str = WiFi.set_AP_config(&self.internal_aux_buffer, cmd, config) catch unreachable;
             self.TX_callback_handler(config_str, self.TX_RX_user_data);
         }
 
-        fn WiFi_apply_STA_config(self: *Self, cmd: []const u8, config: WiFiSTAConfig) DriverError!void {
+        fn WiFi_apply_STA_config(self: *Self, cmd: []const u8, config: WiFiSTAConfig) void {
             const config_str = WiFi.set_STA_config(&self.internal_aux_buffer, cmd, config) catch unreachable;
             self.TX_callback_handler(config_str, self.TX_RX_user_data);
         }
@@ -526,6 +534,64 @@ pub fn EspAT(comptime driver_config: Config) type {
         fn apply_udp_config(self: *Self, id: usize, args: ConnectConfig, udp_conf: NetworkUDPConn) void {
             const config = Network.set_udp_config(&self.internal_aux_buffer, id, args, udp_conf) catch unreachable;
             self.TX_callback_handler(config, self.TX_RX_user_data);
+        }
+
+        fn handler_WiFi_TX(self: *Self, cmd_data: []const u8, data: WiFiPackage) void {
+            switch (data) {
+                .AP_conf_pkg => |pkg| {
+                    self.WiFi_apply_AP_config(cmd_data, pkg);
+                    self.busy_flag.Command = true;
+                },
+                .STA_conf_pkg => |pkg| {
+                    self.WiFi_apply_STA_config(cmd_data, pkg);
+                    self.busy_flag.WiFi = true;
+                },
+                .MAC_config => |pkg| {
+                    self.apply_WiFi_mac(cmd_data, pkg);
+                    self.busy_flag.Command = true;
+                },
+                else => {},
+            }
+        }
+
+        fn handler_socket_TX(self: *Self, cmd_data: []const u8, data: NetworkPackage) void {
+            const id = data.descriptor_id;
+            switch (data.pkg_type) {
+                .NetworkSendPkg => |to_send| {
+                    self.TX_callback_handler(cmd_data, self.TX_RX_user_data);
+                    self.Network_corrent_pkg = NetworkToSend{
+                        .data = to_send.data,
+                        .id = id,
+                    };
+                    self.busy_flag.Socket = true;
+                },
+                .NetworkAcceptPkg => {
+                    self.long_data.id = id;
+                    self.TX_callback_handler(cmd_data, self.TX_RX_user_data);
+                    self.busy_flag.Command = true;
+                },
+                .NetworkClosePkg => {
+                    self.TX_callback_handler(cmd_data, self.TX_RX_user_data);
+                    self.busy_flag.Command = true;
+                    if (self.Network_binds[id]) |*bd| {
+                        bd.to_send -= 1;
+                    }
+                },
+                .ConnectConfig => |connpkg| {
+                    switch (connpkg.config) {
+                        .tcp => |config| {
+                            self.apply_tcp_config(id, connpkg, config);
+                        },
+                        .ssl => |config| {
+                            self.apply_tcp_config(id, connpkg, config);
+                        },
+                        .udp => |config| {
+                            self.apply_udp_config(id, connpkg, config);
+                        },
+                    }
+                    self.busy_flag.Command = true;
+                },
+            }
         }
 
         pub fn process(self: *Self) DriverError!void {
@@ -596,55 +662,10 @@ pub fn EspAT(comptime driver_config: Config) type {
                         self.busy_flag.Command = true;
                     },
                     .Socket => |data| {
-                        const id = data.descriptor_id;
-                        switch (data.pkg_type) {
-                            .NetworkSendPkg => |to_send| {
-                                self.TX_callback_handler(cmd_data, self.TX_RX_user_data);
-                                self.Network_corrent_pkg = NetworkToSend{
-                                    .data = to_send.data,
-                                    .id = id,
-                                };
-                                self.busy_flag.Socket = true;
-                            },
-                            .NetworkAcceptPkg => {
-                                self.long_data.id = id;
-                                self.TX_callback_handler(cmd_data, self.TX_RX_user_data);
-                                self.busy_flag.Command = true;
-                            },
-                            .NetworkClosePkg => {
-                                self.TX_callback_handler(cmd_data, self.TX_RX_user_data);
-                                self.busy_flag.Command = true;
-                                if (self.Network_binds[id]) |*bd| {
-                                    bd.to_send -= 1;
-                                }
-                            },
-                            .ConnectConfig => |connpkg| {
-                                switch (connpkg.config) {
-                                    .tcp => |config| {
-                                        self.apply_tcp_config(id, connpkg, config);
-                                    },
-                                    .ssl => |config| {
-                                        self.apply_tcp_config(id, connpkg, config);
-                                    },
-                                    .udp => |config| {
-                                        self.apply_udp_config(id, connpkg, config);
-                                    },
-                                }
-                                self.busy_flag.Command = true;
-                            },
-                        }
+                        self.handler_socket_TX(cmd_data, data);
                     },
                     .WiFi => |data| {
-                        switch (data) {
-                            .AP_conf_pkg => |pkg| {
-                                try self.WiFi_apply_AP_config(cmd_data, pkg);
-                                self.busy_flag.Command = true;
-                            },
-                            .STA_conf_pkg => |pkg| {
-                                try self.WiFi_apply_STA_config(cmd_data, pkg);
-                                self.busy_flag.WiFi = true;
-                            },
-                        }
+                        self.handler_WiFi_TX(cmd_data, data);
                     },
                     .Bluetooth => {
                         //TODO
@@ -763,14 +784,40 @@ pub fn EspAT(comptime driver_config: Config) type {
             } else if (self.Wifi_mode == WiFiDriverMode.NONE) {
                 return DriverError.WIFI_OFF;
             }
+            const free_tx = self.get_tx_free_space();
+            if (free_tx < WiFi.calc_STA_pkgs(config)) return DriverError.TX_BUFFER_FULL;
             try WiFi.check_STA_config(config);
 
             var pkg: TXEventPkg = .{};
+
+            if (config.wifi_protocol) |proto| {
+                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d}{s}", .{
+                    prefix,
+                    get_cmd_string(.WIFI_STA_PROTO),
+                    @as(u4, @bitCast(proto)),
+                    postfix,
+                }) catch unreachable;
+                pkg.cmd_len = cmd_slice.len;
+                pkg.cmd_enum = .WIFI_STA_PROTO;
+                self.TX_fifo.writeItem(pkg) catch unreachable;
+            }
+
+            if (config.mac) |mac| {
+                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{
+                    prefix,
+                    get_cmd_string(.WIFI_STA_MAC),
+                }) catch unreachable;
+                pkg.cmd_len = cmd_slice.len;
+                pkg.cmd_enum = .WIFI_STA_MAC;
+                pkg.Extra_data = .{ .WiFi = .{ .MAC_config = mac } };
+                self.TX_fifo.writeItem(pkg) catch unreachable;
+            }
+
             const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{ prefix, get_cmd_string(.WIFI_CONNECT) }) catch unreachable;
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .WIFI_CONNECT;
             pkg.Extra_data = .{ .WiFi = .{ .STA_conf_pkg = config } };
-            self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
+            self.TX_fifo.writeItem(pkg) catch unreachable;
         }
 
         pub fn WiFi_config_AP(self: *Self, config: WiFiAPConfig) !void {
@@ -779,14 +826,40 @@ pub fn EspAT(comptime driver_config: Config) type {
             } else if (self.Wifi_mode == .NONE) {
                 return DriverError.WIFI_OFF;
             }
+            const free_tx = self.get_tx_free_space();
+            if (free_tx < WiFi.calc_AP_pkgs(config)) return DriverError.TX_BUFFER_FULL;
             try WiFi.check_AP_config(config);
 
             var pkg: TXEventPkg = .{};
+
+            if (config.wifi_protocol) |proto| {
+                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d}{s}", .{
+                    prefix,
+                    get_cmd_string(.WIFI_AP_PROTO),
+                    @as(u4, @bitCast(proto)),
+                    postfix,
+                }) catch unreachable;
+                pkg.cmd_len = cmd_slice.len;
+                pkg.cmd_enum = .WIFI_AP_PROTO;
+                self.TX_fifo.writeItem(pkg) catch unreachable;
+            }
+
+            if (config.mac) |mac| {
+                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{
+                    prefix,
+                    get_cmd_string(.WIFI_AP_MAC),
+                }) catch unreachable;
+                pkg.cmd_len = cmd_slice.len;
+                pkg.cmd_enum = .WIFI_AP_MAC;
+                pkg.Extra_data = .{ .WiFi = .{ .MAC_config = mac } };
+                self.TX_fifo.writeItem(pkg) catch unreachable;
+            }
+
             const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{ prefix, get_cmd_string(.WIFI_CONF) }) catch unreachable;
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .WIFI_CONF;
             pkg.Extra_data = .{ .WiFi = .{ .AP_conf_pkg = config } };
-            self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
+            self.TX_fifo.writeItem(pkg) catch unreachable;
         }
 
         pub fn set_WiFi_mode(self: *Self, mode: WiFiDriverMode) !void {
@@ -884,21 +957,7 @@ pub fn EspAT(comptime driver_config: Config) type {
         pub fn connect(self: *Self, id: usize, config: ConnectConfig) DriverError!void {
             if (self.get_tx_free_space() < 2) return DriverError.TX_BUFFER_FULL; //one CMD for set mode and one to connect to the host
             if (id > self.Network_binds.len or id < self.div_binds) return DriverError.INVALID_ARGS;
-            if (config.remote_host.len > 64) return DriverError.INVALID_ARGS;
-            switch (config.config) {
-                .tcp => |args| {
-                    if (args.keep_alive > 7200) return DriverError.INVALID_ARGS;
-                },
-                .ssl => |args| {
-                    if (args.keep_alive > 7200) return DriverError.INVALID_ARGS;
-                },
-                .udp => |args| {
-                    if (args.local_port == 0) return DriverError.INVALID_ARGS;
-                    if ((config.recv_mode == .passive) and (args.mode != .Unchanged)) {
-                        std.log.warn("UDP Mode 1 and 2 has no effect with passive recv", .{});
-                    }
-                },
-            }
+            Network.check_connect_config(config) catch return DriverError.INVALID_ARGS;
 
             //set RECV mode for the ID
             var recv_mode = TXEventPkg{};
@@ -922,7 +981,7 @@ pub fn EspAT(comptime driver_config: Config) type {
                     },
                 },
             } };
-            self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
+            self.TX_fifo.writeItem(pkg) catch unreachable;
         }
         pub fn accept(self: *Self, id: usize) DriverError!void {
             if (id >= self.Network_binds.len) return DriverError.INVALID_ARGS;

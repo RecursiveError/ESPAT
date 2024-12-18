@@ -138,6 +138,22 @@ pub fn set_udp_config(out_buffer: []u8, id: usize, args: ConnectConfig, udp_conf
     return out_buffer[0..cmd_size];
 }
 
+pub fn check_connect_config(config: ConnectConfig) !void {
+    if (config.remote_host.len > 64) return error.InvalidHots;
+    if (config.remote_port == 0) return error.InvalidRemotePort;
+    switch (config.config) {
+        .tcp, .ssl => |args| {
+            if (args.keep_alive > 7200) return error.InvalidKeepAliveValue;
+        },
+        .udp => |args| {
+            if (args.local_port == 0) return error.InvalidLocalPort;
+            if ((config.recv_mode == .passive) and (args.mode != .Unchanged)) {
+                std.log.warn("UDP Mode 1 and 2 has no effect with passive recv", .{});
+            }
+        },
+    }
+}
+
 const IpDataInfo = struct {
     remote_host: []const u8,
     remote_port: u16,

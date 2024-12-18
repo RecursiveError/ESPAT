@@ -69,6 +69,8 @@ pub const ConnectConfig = struct {
     recv_mode: RecvMode,
     remote_host: []const u8,
     remote_port: u16,
+    local_ip: ?[]const u8 = null,
+    timeout: ?u16 = null,
     config: NetWorkConnectType,
 };
 
@@ -108,23 +110,39 @@ pub fn get_send_event(str: []const u8) !NetworkSendEvent {
 pub fn set_tcp_config(out_buffer: []u8, id: usize, args: ConnectConfig, tcp_conf: NetworkTCPConn) ![]u8 {
     var cmd_slice: []const u8 = undefined;
     var cmd_size: usize = 0;
-    cmd_slice = try std.fmt.bufPrint(out_buffer, "{s}{s}={d},\"TCP\",\"{s}\",{d},{d}{s}", .{
+    cmd_slice = try std.fmt.bufPrint(out_buffer, "{s}{s}={d},\"TCP\",\"{s}\",{d},{d}", .{
         prefix,
         get_cmd_string(.NETWORK_CONNECT),
         id,
         args.remote_host,
         args.remote_port,
         tcp_conf.keep_alive,
-        postfix,
     });
-    cmd_size = cmd_slice.len;
+    cmd_size += cmd_slice.len;
+
+    if (args.local_ip) |ip| {
+        cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], ",\"{s}\"", .{ip});
+        cmd_size += cmd_slice.len;
+    } else {
+        if (args.timeout != null) {
+            cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], ",", .{});
+            cmd_size += cmd_slice.len;
+        }
+    }
+    if (args.timeout) |timeout| {
+        cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], ",{d}", .{timeout});
+        cmd_size += cmd_slice.len;
+    }
+    cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], "{s}", .{postfix});
+    cmd_size += cmd_slice.len;
+
     return out_buffer[0..cmd_size];
 }
 
 pub fn set_udp_config(out_buffer: []u8, id: usize, args: ConnectConfig, udp_conf: NetworkUDPConn) ![]u8 {
     var cmd_slice: []const u8 = undefined;
     var cmd_size: usize = 0;
-    cmd_slice = try std.fmt.bufPrint(out_buffer, "{s}{s}={d},\"UDP\",\"{s}\",{d},{d},{d}{s}", .{
+    cmd_slice = try std.fmt.bufPrint(out_buffer, "{s}{s}={d},\"UDP\",\"{s}\",{d},{d},{d}", .{
         prefix,
         get_cmd_string(.NETWORK_CONNECT),
         id,
@@ -132,9 +150,24 @@ pub fn set_udp_config(out_buffer: []u8, id: usize, args: ConnectConfig, udp_conf
         args.remote_port,
         udp_conf.local_port,
         @intFromEnum(udp_conf.mode),
-        postfix,
     });
     cmd_size = cmd_slice.len;
+
+    if (args.local_ip) |ip| {
+        cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], ",\"{s}\"", .{ip});
+        cmd_size += cmd_slice.len;
+    } else {
+        if (args.timeout != null) {
+            cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], ",", .{});
+            cmd_size += cmd_slice.len;
+        }
+    }
+    if (args.timeout) |timeout| {
+        cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], ",{d}", .{timeout});
+        cmd_size += cmd_slice.len;
+    }
+    cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], "{s}", .{postfix});
+    cmd_size += cmd_slice.len;
     return out_buffer[0..cmd_size];
 }
 
@@ -151,6 +184,10 @@ pub fn check_connect_config(config: ConnectConfig) !void {
                 std.log.warn("UDP Mode 1 and 2 has no effect with passive recv", .{});
             }
         },
+    }
+
+    if (config.timeout) |timeout| {
+        if (timeout > 60000) return error.InvalidTimeout;
     }
 }
 

@@ -190,6 +190,7 @@ pub fn EspAT(comptime driver_config: Config) type {
         machine_state: Drive_states = .init,
         Wifi_state: WiFistate = .OFF,
         Wifi_mode: WiFiDriverMode = .NONE,
+        WiFi_dhcp: WiFi.DHCPEnable = .{},
         network_mode: NetworkDriveMode = .CLIENT_ONLY,
         div_binds: usize = 0,
 
@@ -517,6 +518,11 @@ pub fn EspAT(comptime driver_config: Config) type {
             self.TX_callback_handler(config, self.TX_RX_user_data);
         }
 
+        fn apply_static_ip(self: *Self, cmd_data: []const u8, ip: WiFi.StaticIp) void {
+            const config = WiFi.set_static_ip(&self.internal_aux_buffer, cmd_data, ip) catch unreachable;
+            self.TX_callback_handler(config, self.TX_RX_user_data);
+        }
+
         fn WiFi_apply_AP_config(self: *Self, cmd: []const u8, config: WiFiAPConfig) void {
             const config_str = WiFi.set_AP_config(&self.internal_aux_buffer, cmd, config) catch unreachable;
             self.TX_callback_handler(config_str, self.TX_RX_user_data);
@@ -548,6 +554,10 @@ pub fn EspAT(comptime driver_config: Config) type {
                 },
                 .MAC_config => |pkg| {
                     self.apply_WiFi_mac(cmd_data, pkg);
+                    self.busy_flag.Command = true;
+                },
+                .static_ap_config => |pkg| {
+                    self.apply_static_ip(cmd_data, pkg);
                     self.busy_flag.Command = true;
                 },
                 else => {},
@@ -777,7 +787,6 @@ pub fn EspAT(comptime driver_config: Config) type {
             self.Error_handler_user_data = user_data;
         }
 
-        //TODO: add more config
         pub fn WiFi_connect_AP(self: *Self, config: WiFiSTAConfig) !void {
             if (self.Wifi_mode == .AP) {
                 return DriverError.STA_OFF;
@@ -811,6 +820,35 @@ pub fn EspAT(comptime driver_config: Config) type {
                 pkg.cmd_enum = .WIFI_STA_MAC;
                 pkg.Extra_data = .{ .WiFi = .{ .MAC_config = mac } };
                 self.TX_fifo.writeItem(pkg) catch unreachable;
+            }
+
+            if (config.wifi_ip) |ip_mode| {
+                switch (ip_mode) {
+                    .DHCP => {
+                        self.WiFi_dhcp.STA = 1;
+                        const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1,{d}{s}", .{
+                            prefix,
+                            get_cmd_string(.WiFi_SET_DHCP),
+                            @as(u2, @bitCast(self.WiFi_dhcp)),
+                            postfix,
+                        }) catch unreachable;
+                        pkg.cmd_len = cmd_slice.len;
+                        pkg.cmd_enum = .WiFi_SET_DHCP;
+                        pkg.Extra_data = .{ .Command = {} };
+                        self.TX_fifo.writeItem(pkg) catch unreachable;
+                    },
+                    .static => |static_ip| {
+                        self.WiFi_dhcp.STA = 0;
+                        const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{
+                            prefix,
+                            get_cmd_string(.WIFI_STA_IP),
+                        }) catch unreachable;
+                        pkg.cmd_len = cmd_slice.len;
+                        pkg.cmd_enum = .WIFI_STA_IP;
+                        pkg.Extra_data = .{ .WiFi = .{ .static_ap_config = static_ip } };
+                        self.TX_fifo.writeItem(pkg) catch unreachable;
+                    },
+                }
             }
 
             const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{ prefix, get_cmd_string(.WIFI_CONNECT) }) catch unreachable;
@@ -853,6 +891,35 @@ pub fn EspAT(comptime driver_config: Config) type {
                 pkg.cmd_enum = .WIFI_AP_MAC;
                 pkg.Extra_data = .{ .WiFi = .{ .MAC_config = mac } };
                 self.TX_fifo.writeItem(pkg) catch unreachable;
+            }
+
+            if (config.wifi_ip) |ip_mode| {
+                switch (ip_mode) {
+                    .DHCP => {
+                        self.WiFi_dhcp.AP = 1;
+                        const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1,{d}{s}", .{
+                            prefix,
+                            get_cmd_string(.WiFi_SET_DHCP),
+                            @as(u2, @bitCast(self.WiFi_dhcp)),
+                            postfix,
+                        }) catch unreachable;
+                        pkg.cmd_len = cmd_slice.len;
+                        pkg.cmd_enum = .WiFi_SET_DHCP;
+                        pkg.Extra_data = .{ .Command = {} };
+                        self.TX_fifo.writeItem(pkg) catch unreachable;
+                    },
+                    .static => |static_ip| {
+                        self.WiFi_dhcp.AP = 0;
+                        const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{
+                            prefix,
+                            get_cmd_string(.WIFI_AP_IP),
+                        }) catch unreachable;
+                        pkg.cmd_len = cmd_slice.len;
+                        pkg.cmd_enum = .WIFI_AP_IP;
+                        pkg.Extra_data = .{ .WiFi = .{ .static_ap_config = static_ip } };
+                        self.TX_fifo.writeItem(pkg) catch unreachable;
+                    },
+                }
             }
 
             const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{ prefix, get_cmd_string(.WIFI_CONF) }) catch unreachable;

@@ -40,6 +40,11 @@ pub const WiFiProtocol = packed struct(u4) {
     @"802.11LR": u1 = 0,
 };
 
+pub const DHCPEnable = packed struct(u2) {
+    STA: u1 = 1,
+    AP: u1 = 1,
+};
+
 pub const WiFiDHCPMode = packed struct(u3) {};
 
 pub const WiFiSTAConfig = struct {
@@ -154,13 +159,15 @@ pub fn check_static_ip(ip: StaticIp) !void {
     const ip_len = ip.ip.len;
     if ((ip_len > 15) or (ip_len < 7)) return error.InvalidIP;
     if (ip.gateway) |gateway| {
-        const gate_len = gateway.len;
-        if ((gate_len > 15) or (gate_len < 7)) return error.InvalidGateWay;
-    }
-
-    if (ip.mask) |mask| {
-        const mask_len = mask.len;
-        if ((mask_len > 15) or (mask_len < 7)) return error.InvalidGateWay;
+        if (ip.mask) |mask| {
+            const mask_len = mask.len;
+            if ((mask_len > 15) or (mask_len < 7)) return error.InvalidGateWay;
+            const gate_len = gateway.len;
+            if ((gate_len > 15) or (gate_len < 7)) return error.InvalidGateWay;
+        } else {
+            //If the gateway is denified, mask is mandatory
+            return error.NullMask;
+        }
     }
 }
 
@@ -308,6 +315,33 @@ pub fn set_STA_config(out_buffer: []u8, cmd: []const u8, config: WiFiSTAConfig) 
     return out_buffer[0..cmd_size];
 }
 
+pub fn set_mac(out_buffer: []u8, cmd: []const u8, mac: []const u8) ![]const u8 {
+    if (out_buffer.len < 50) return error.BufferTooSmall;
+    var cmd_slice: []u8 = undefined;
+    var cmd_size: usize = 0;
+    cmd_slice = std.fmt.bufPrint(out_buffer, "{s}\"{s}\"{s}", .{ cmd, mac, postfix }) catch unreachable;
+    cmd_size += cmd_slice.len;
+    return out_buffer[0..cmd_size];
+}
+
+pub fn set_static_ip(out_buffer: []u8, cmd: []const u8, static_ip: StaticIp) ![]const u8 {
+    if (out_buffer.len < 50) return error.BufferTooSmall;
+    var cmd_slice: []u8 = undefined;
+    var cmd_size: usize = 0;
+    cmd_slice = std.fmt.bufPrint(out_buffer, "{s}\"{s}\"", .{ cmd, static_ip.ip }) catch unreachable;
+    cmd_size += cmd_slice.len;
+
+    if (static_ip.gateway) |gataway| {
+        if (static_ip.mask) |mask| {
+            cmd_slice = std.fmt.bufPrint(out_buffer[cmd_size..], ",\"{s}\",\"{s}\"", .{ gataway, mask }) catch unreachable;
+            cmd_size += cmd_slice.len;
+        }
+    }
+    cmd_slice = std.fmt.bufPrint(out_buffer[cmd_size..], "{s}", .{postfix}) catch unreachable;
+    cmd_size += cmd_slice.len;
+    return out_buffer[0..cmd_size];
+}
+
 pub fn calc_AP_pkgs(base: WiFiAPConfig) usize {
     var pkgs: usize = 1;
     if (base.dhcp_config != null) pkgs += 1;
@@ -323,13 +357,4 @@ pub fn calc_STA_pkgs(base: WiFiSTAConfig) usize {
     if (base.mac != null) pkgs += 1;
     if (base.wifi_protocol != null) pkgs += 1;
     return pkgs;
-}
-
-pub fn set_mac(out_buffer: []u8, cmd: []const u8, mac: []const u8) ![]const u8 {
-    if (out_buffer.len < 50) return error.BufferTooSmall;
-    var cmd_slice: []u8 = undefined;
-    var cmd_size: usize = 0;
-    cmd_slice = std.fmt.bufPrint(out_buffer, "{s}\"{s}\"{s}", .{ cmd, mac, postfix }) catch unreachable;
-    cmd_size += cmd_slice.len;
-    return out_buffer[0..cmd_size];
 }

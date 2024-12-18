@@ -1102,11 +1102,13 @@ pub fn EspAT(comptime driver_config: Config) type {
             if (self.network_mode == NetworkDriveMode.CLIENT_ONLY) return DriverError.SERVER_OFF;
 
             const end_bind = self.div_binds;
+            var cmd_slice: []const u8 = undefined;
+
             var pkg: TXEventPkg = .{ .cmd_enum = .NETWORK_RECV_MODE };
 
             if (self.network_mode == .SERVER_ONLY) {
-                if (self.get_tx_free_space() < 2) return DriverError.TX_BUFFER_FULL;
-                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=5,{d}{s}", .{
+                if (self.get_tx_free_space() < 3) return DriverError.TX_BUFFER_FULL;
+                cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=5,{d}{s}", .{
                     prefix,
                     get_cmd_string(.NETWORK_RECV_MODE),
                     @intFromEnum(config.recv_mode),
@@ -1116,9 +1118,9 @@ pub fn EspAT(comptime driver_config: Config) type {
                 pkg.cmd_len = cmd_slice.len;
                 self.TX_fifo.writeItem(pkg) catch unreachable;
             } else {
-                if (self.get_tx_free_space() < (end_bind + 1)) return DriverError.TX_BUFFER_FULL;
+                if (self.get_tx_free_space() < (end_bind + 2)) return DriverError.TX_BUFFER_FULL;
                 for (0..end_bind) |id| {
-                    const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d},{d}{s}", .{
+                    cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d},{d}{s}", .{
                         prefix,
                         get_cmd_string(.NETWORK_RECV_MODE),
                         id,
@@ -1131,7 +1133,11 @@ pub fn EspAT(comptime driver_config: Config) type {
                 }
             }
 
-            var cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1,{d}", .{ prefix, get_cmd_string(.NETWORK_SERVER), config.port }) catch unreachable;
+            cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1,{d}", .{
+                prefix,
+                get_cmd_string(.NETWORK_SERVER),
+                config.port,
+            }) catch unreachable;
             var slice_len = cmd_slice.len;
             switch (config.server_type) {
                 .Default => {
@@ -1154,6 +1160,20 @@ pub fn EspAT(comptime driver_config: Config) type {
             pkg.cmd_len = slice_len;
             pkg.cmd_enum = .NETWORK_SERVER;
             self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
+
+            if (config.timeout) |timeout| {
+                const time = @min(7200, timeout);
+                cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d}{s}", .{
+                    prefix,
+                    get_cmd_string(.NETWORK_SERVER_TIMEOUT),
+                    time,
+                    postfix,
+                }) catch unreachable;
+                pkg.cmd_enum = .NETWORK_SERVER_TIMEOUT;
+                pkg.cmd_len = cmd_slice.len;
+                self.TX_fifo.writeItem(pkg) catch unreachable;
+            }
+
             for (0..end_bind) |id| {
                 try self.release(id);
                 self.Network_binds[id] = Network.NetworkHandler{

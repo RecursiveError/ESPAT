@@ -80,6 +80,7 @@ pub const ServerConfig = struct {
     user_data: ?*anyopaque,
     server_type: NetworkHandlerType,
     port: u16,
+    timeout: ?u16 = null,
 };
 
 pub const NetworkPackageType = union(enum) {

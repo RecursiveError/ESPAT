@@ -46,6 +46,12 @@ pub const NetworkSendPkg = struct {
     data: []const u8 = undefined,
 };
 
+pub const NetworkSendToPkg = struct {
+    data: []const u8 = undefined,
+    remote_host: []const u8,
+    remote_port: u16,
+};
+
 pub const NetworkTCPConn = struct {
     keep_alive: u16 = 0,
 };
@@ -85,6 +91,7 @@ pub const ServerConfig = struct {
 
 pub const NetworkPackageType = union(enum) {
     NetworkSendPkg: NetworkSendPkg,
+    NetworkSendToPkg: NetworkSendToPkg,
     NetworkAcceptPkg: void,
     NetworkClosePkg: void,
     ConnectConfig: ConnectConfig,
@@ -312,9 +319,14 @@ pub const Client = struct {
     send_fn: *const fn (ctx: *anyopaque, id: usize, data: []const u8) ClientError!void,
     close_fn: *const fn (ctx: *anyopaque, id: usize) ClientError!void,
     accept_fn: *const fn (ctx: *anyopaque, id: usize) ClientError!void,
+    sendTo_fn: *const fn (ctx: *anyopaque, id: usize, data: []const u8, remote_host: []const u8, remote_port: u16) ClientError!void,
 
     pub fn send(self: *const Client, data: []const u8) !void {
         try self.send_fn(self.driver, self.id, data);
+    }
+
+    pub fn send_to(self: *const Client, data: []const u8, remote_host: []const u8, remote_port: u16) !void {
+        try self.sendTo_fn(self.driver, self.id, data, remote_host, remote_port);
     }
 
     pub fn close(self: *const Client) !void {

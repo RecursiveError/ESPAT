@@ -542,6 +542,17 @@ pub fn EspAT(comptime driver_config: Config) type {
             self.TX_callback_handler(config, self.TX_RX_user_data);
         }
 
+        fn apply_udp_send(self: *Self, cmd_data: []const u8, data: Network.NetworkSendToPkg) void {
+            const cmd = std.fmt.bufPrint(&self.internal_aux_buffer, "{s},\"{s}\",{d}{s}", .{
+                cmd_data,
+                data.remote_host,
+                data.remote_port,
+                postfix,
+            }) catch unreachable;
+
+            self.TX_callback_handler(cmd, self.TX_RX_user_data);
+        }
+
         fn handler_WiFi_TX(self: *Self, cmd_data: []const u8, data: WiFiPackage) void {
             switch (data) {
                 .AP_conf_pkg => |pkg| {
@@ -569,6 +580,14 @@ pub fn EspAT(comptime driver_config: Config) type {
             switch (data.pkg_type) {
                 .NetworkSendPkg => |to_send| {
                     self.TX_callback_handler(cmd_data, self.TX_RX_user_data);
+                    self.Network_corrent_pkg = NetworkToSend{
+                        .data = to_send.data,
+                        .id = id,
+                    };
+                    self.busy_flag.Socket = true;
+                },
+                .NetworkSendToPkg => |to_send| {
+                    self.apply_udp_send(cmd_data, to_send);
                     self.Network_corrent_pkg = NetworkToSend{
                         .data = to_send.data,
                         .id = id,
@@ -611,6 +630,9 @@ pub fn EspAT(comptime driver_config: Config) type {
                 },
                 .IDLE => {
                     try self.IDLE_REV();
+                    if (self.long_data_request) {
+                        self.READ_LONG();
+                    }
                     try self.IDLE_TRANS();
                 },
                 .OFF => return DriverError.DRIVER_OFF,
@@ -623,7 +645,7 @@ pub fn EspAT(comptime driver_config: Config) type {
             const fifo_size = self.RX_fifo.readableLength();
             for (0..fifo_size) |_| {
                 if (self.long_data_request) {
-                    self.READ_LONG();
+                    return;
                 }
                 const rev_data = self.RX_fifo.readItem();
                 if (rev_data) |data| {
@@ -702,14 +724,13 @@ pub fn EspAT(comptime driver_config: Config) type {
                 offset = new_offset;
             }
             if (self.Network_binds[id]) |*bd| {
-                bd.client.event = .{ .ReadData = self.internal_aux_buffer[start..offset] };
+                const temp = self.internal_aux_buffer[start..offset];
+                bd.client.event = .{ .ReadData = temp[0..to_read] }; //not include the command response \r\n
                 bd.notify();
                 bd.client.remote_host = null;
                 bd.client.remote_port = null;
             }
-            self.internal_aux_buffer_pos = 0;
             self.long_data_request = false;
-            self.machine_state = .IDLE;
         }
 
         //TODO; make a event pool just to init commands
@@ -998,6 +1019,7 @@ pub fn EspAT(comptime driver_config: Config) type {
                 .accept_fn = Self.accpet_fn,
                 .close_fn = Self.close_fn,
                 .send_fn = Self.send_fn,
+                .sendTo_fn = Self.sendTo_fn,
                 .driver = self,
                 .id = id,
                 .event = .{ .Closed = {} },
@@ -1123,6 +1145,49 @@ pub fn EspAT(comptime driver_config: Config) type {
         fn send_fn(ctx: *anyopaque, id: usize, data: []const u8) Network.ClientError!void {
             const driver: *Self = @alignCast(@ptrCast(ctx));
             driver.send(id, data) catch return error.InternalError;
+        }
+
+        pub fn send_to(self: *Self, id: usize, data: []const u8, remote_host: []const u8, remote_port: u16) DriverError!void {
+            if (id >= self.Network_binds.len) return DriverError.INVALID_ARGS;
+            if (data.len > 2048) return DriverError.INVALID_ARGS;
+            const free_TX_cmd = self.TX_fifo.writableLength();
+            if (free_TX_cmd < 2) return DriverError.BUSY; //keep some space to other commands
+
+            if (!std.net.isValidHostName(remote_host)) return error.INVALID_ARGS;
+            if (remote_port == 0) return error.INVALID_ARGS;
+
+            if (self.Network_binds[id]) |*bd| {
+                var pkg: TXEventPkg = .{};
+                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d},{d}", .{
+                    prefix,
+                    get_cmd_string(.NETWORK_SEND),
+                    id,
+                    data.len,
+                }) catch unreachable;
+                pkg.cmd_len = cmd_slice.len;
+                pkg.cmd_enum = .NETWORK_SEND;
+                pkg.Extra_data = .{
+                    .Socket = .{
+                        .descriptor_id = id,
+                        .pkg_type = .{
+                            .NetworkSendToPkg = .{
+                                .data = data,
+                                .remote_host = remote_host,
+                                .remote_port = remote_port,
+                            },
+                        },
+                    },
+                };
+                self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
+                bd.to_send += 1;
+                return;
+            }
+            return DriverError.INVALID_BIND;
+        }
+
+        fn sendTo_fn(ctx: *anyopaque, id: usize, data: []const u8, remote_host: []const u8, remote_port: u16) Network.ClientError!void {
+            const driver: *Self = @alignCast(@ptrCast(ctx));
+            driver.send_to(id, data, remote_host, remote_port) catch return error.InternalError;
         }
 
         pub fn create_server(self: *Self, config: ServerConfig) DriverError!void {

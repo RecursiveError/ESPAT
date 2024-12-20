@@ -158,12 +158,20 @@ pub fn check_protocol(proto: WiFiProtocol) !void {
 pub fn check_static_ip(ip: StaticIp) !void {
     const ip_len = ip.ip.len;
     if ((ip_len > 15) or (ip_len < 7)) return error.InvalidIP;
+
+    if (!std.net.isValidHostName(ip.ip)) {
+        return error.InvalidIP;
+    }
+
     if (ip.gateway) |gateway| {
         if (ip.mask) |mask| {
             const mask_len = mask.len;
             if ((mask_len > 15) or (mask_len < 7)) return error.InvalidGateWay;
             const gate_len = gateway.len;
             if ((gate_len > 15) or (gate_len < 7)) return error.InvalidGateWay;
+            if (!std.net.isValidHostName(gateway) or !std.net.isValidHostName(mask)) {
+                return error.InvalidNetConfig;
+            }
         } else {
             //If the gateway is denified, mask is mandatory
             return error.NullMask;

@@ -940,9 +940,29 @@ pub fn EspAT(comptime driver_config: Config) type {
 
         pub fn WiFi_disconnect(self: *Self) DriverError!void {
             var pkg: TXEventPkg = .{};
-            const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}{s}", .{ prefix, get_cmd_string(.WIFI_DISCONNECT), postfix }) catch unreachable;
+            const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}{s}", .{
+                prefix,
+                get_cmd_string(.WIFI_DISCONNECT),
+                postfix,
+            }) catch unreachable;
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .WIFI_DISCONNECT;
+            self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
+        }
+
+        pub fn WiFi_disconnect_device(self: *Self, mac: []const u8) DriverError!void {
+            var pkg: TXEventPkg = .{};
+            const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{
+                prefix,
+                get_cmd_string(.WIFI_DISCONNECT_DEVICE),
+            }) catch unreachable;
+            pkg.cmd_len = cmd_slice.len;
+            pkg.cmd_enum = .WIFI_DISCONNECT_DEVICE;
+            pkg.Extra_data = .{
+                .WiFi = .{
+                    .MAC_config = mac,
+                },
+            };
             self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
         }
 

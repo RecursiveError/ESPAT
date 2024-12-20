@@ -1146,7 +1146,8 @@ pub fn EspAT(comptime driver_config: Config) type {
             const driver: *Self = @alignCast(@ptrCast(ctx));
             driver.send(id, data) catch return error.InternalError;
         }
-
+        ///sends data to a specific host, can only be used on UDP type connections.
+        ///always result in a send fail if used in TCP or SSL conn
         pub fn send_to(self: *Self, id: usize, data: []const u8, remote_host: []const u8, remote_port: u16) DriverError!void {
             if (id >= self.Network_binds.len) return DriverError.INVALID_ARGS;
             if (data.len > 2048) return DriverError.INVALID_ARGS;

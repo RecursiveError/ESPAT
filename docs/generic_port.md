@@ -9,7 +9,7 @@ const zig_serial = @import("serial");
 const std = @import("std");
 
 const wifi_ssid = "SSID";
-const wifi_password = "password";
+const wifi_password = "PASSWORD";
 const html = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<!DOCTYPE html>\r\n<html lang=\"pt-BR\">\r\n<head>\r\n<meta charset=\"UTF-8\">\r\n<title>Hello World</title>\r\n<p>All Your Codebase Are Belong To Us</p>\r\n</head>\r\n<body>\r\n<h1>Hello World</h1>\r\n</body>\r\n</html>\r\n";
 const HTTP_request = "GET /data/2.5/weather?lat={s}&lon={s}&appid={s} HTTP/1.1\r\nHost: api.openweathermap.org\r\nUser-Agent: ESPAT/1.0\r\nAccept: */*\r\n\r\n";
 var API_BUF: std.fifo.LinearFifo(u8, .{ .Static = 4096 }) = std.fifo.LinearFifo(u8, .{ .Static = 4096 }).init();
@@ -25,16 +25,14 @@ fn rx_callback(free_size: usize, user_data: ?*anyopaque) []u8 {
             size += 1;
             if (b == '\n' or b == '>') break;
         }
-        std.log.info("RX GOT {s}", .{rv_internal_buf[0..size]});
         return rv_internal_buf[0..size];
     }
-    _ = std.log.info("null args on RX", .{});
+    std.log.info("null args on RX", .{});
 
     return rv_internal_buf[0..0];
 }
 
 fn TX_callback(data: []const u8, user_data: ?*anyopaque) void {
-    std.log.info("TX: {s}", .{data});
     if (user_data) |userdata| {
         const serial: *std.fs.File = @ptrCast(@alignCast(userdata));
         serial.writer().writeAll(data) catch return;
@@ -81,19 +79,26 @@ fn WiFi_callback(event: Driver.WifiEvent, user_data: ?*anyopaque) void {
 fn server_callback(client: Client, user_data: ?*anyopaque) void {
     _ = user_data;
     switch (client.event) {
+        .Connected => {
+            std.log.info("Client {d} from {s}:{d} connected to the server!", .{
+                client.id,
+                client.remote_host.?,
+                client.remote_port.?,
+            });
+        },
         .DataReport => |len| {
-            _ = std.log.info("server: id {} have {} bytes in queue", .{ client.id, len });
+            std.log.info("server: id {} have {} bytes in queue", .{ client.id, len });
             client.accept() catch |err| {
-                _ = std.log.info("SERVER: got error {}, on bind {}", .{ err, client.id });
+                std.log.info("SERVER: got error {}, on bind {}", .{ err, client.id });
             };
         },
         .ReadData => |data| {
-            _ = std.log.info("server got {s}", .{data});
+            std.log.info("server got {s}", .{data});
             client.send(@constCast(html)) catch |err| {
-                _ = std.log.info("SERVER: got error {}, on bind {}", .{ err, client.id });
+                std.log.info("SERVER: got error {}, on bind {}", .{ err, client.id });
             };
             client.close() catch |err| {
-                _ = std.log.info("SERVER: close got error {}", .{err});
+                std.log.info("SERVER: close got error {}", .{err});
             };
         },
         else => {},
@@ -109,40 +114,37 @@ fn tcp_callback(client: Client, user_data: ?*anyopaque) void {
             std.log.info("TCP send data!", .{});
         },
         .DataReport => |len| {
-            _ = std.log.info("client: have {} bytes in queue", .{len});
+            std.log.info("client TCP: have {} bytes in queue", .{len});
             client.accept() catch |err| {
-                _ = std.log.info("SERVER: got error {}, on bind {}", .{ err, client.id });
+                std.log.info("tcp got error {}, on bind {}", .{ err, client.id });
             };
         },
         .ReadData => |data| {
             std.log.info("Client got data {s}", .{data});
             client.close() catch unreachable;
         },
-        .Closed => {
-            std.log.info("API GOT: {s}", .{API_BUF.buf});
-        },
         else => {
-            std.log.info("CLIENT EVENT: {any}", .{client.event});
+            std.log.info("CLIENT TCP EVENT: {any}", .{client.event});
         },
     }
 }
 
+//all data passed to send or send_to needs to live until a Send event occurs
 var req_buf_udp: [200]u8 = undefined;
+var remote_host: [50]u8 = undefined;
 fn udp_callback(client: Client, user_data: ?*anyopaque) void {
     _ = user_data;
     switch (client.event) {
         .ReadData => |data| {
-            std.log.info("Client got data {s}", .{data});
+            const host_len = client.remote_host.?.len;
+            std.mem.copyForwards(u8, &remote_host, client.remote_host.?);
             const msg = std.fmt.bufPrint(&req_buf_udp, "{d}\r\n", .{data.len}) catch unreachable;
-            client.send(msg) catch |err| {
-                std.log.info("Client got error {any}", .{err});
+            client.send_to(msg, remote_host[0..host_len], client.remote_port.?) catch |err| {
+                std.log.info("udp got error {any}", .{err});
             };
         },
-        .Closed => {
-            std.log.info("API GOT: {s}", .{API_BUF.buf});
-        },
         else => {
-            std.log.info("CLIENT EVENT: {any}", .{client.event});
+            std.log.info("CLIENT UDP EVENT: {any}", .{client.event});
         },
     }
 }
@@ -150,12 +152,26 @@ fn udp_callback(client: Client, user_data: ?*anyopaque) void {
 const STA_config = Driver.WiFiSTAConfig{
     .ssid = wifi_ssid,
     .pwd = wifi_password,
+    .wifi_protocol = .{
+        .@"802.11b" = 1,
+        .@"802.11g" = 1,
+        .@"802.11n" = 1,
+    },
+
+    .wifi_ip = .{ .static = .{ .ip = "192.168.15.37" } },
 };
 
 const AP_config = Driver.WiFiAPConfig{
     .ssid = "banana",
     .channel = 5,
     .ecn = .OPEN,
+    .wifi_protocol = .{
+        .@"802.11b" = 1,
+        .@"802.11g" = 1,
+        .@"802.11n" = 1,
+    },
+    .mac = "00:C0:DA:F0:F0:00",
+    .wifi_ip = .{ .DHCP = {} },
 };
 
 pub fn main() !void {
@@ -177,7 +193,7 @@ pub fn main() !void {
         .stop_bits = .one,
         .handshake = .none,
     });
-    var my_drive = EspAT(.{}).init(TX_callback, rx_callback, &serial);
+    var my_drive = EspAT(.{ .TX_event_pool = 30 }).init(TX_callback, rx_callback, &serial);
     std.log.info("DRIVER MEM: {}", .{@sizeOf(@TypeOf(my_drive))});
     defer my_drive.deinit_driver();
 
@@ -217,9 +233,9 @@ pub fn main() !void {
         .user_data = null,
         .server_type = .TCP,
         .port = 80,
+        .timeout = 2600,
     };
     const id_udp = try my_drive.bind(udp_callback, null);
-
     const id_tcp = try my_drive.bind(tcp_callback, null);
     try my_drive.connect(id_tcp, config_tcp);
     try my_drive.connect(id_udp, config_udp);

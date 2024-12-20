@@ -192,6 +192,12 @@ pub fn check_connect_config(config: ConnectConfig) !void {
     }
 }
 
+pub const RemoteConnInfo = struct {
+    remote_host: []const u8,
+    remote_port: u16,
+    id: usize,
+};
+
 const IpDataInfo = struct {
     remote_host: []const u8,
     remote_port: u16,
@@ -264,6 +270,30 @@ pub fn parse_recv_data(str: []const u8) !IpData {
             .remote_port = port,
             .start_index = start,
         },
+    };
+}
+
+pub fn parser_conn_data(str: []const u8) !RemoteConnInfo {
+    var slices = std.mem.split(u8, str[11..], ",");
+    //all this skips can be avoid with msg filter but that will reduce the speed a lot
+    _ = slices.next(); //skip status
+    const id_slice = slices.next();
+    _ = slices.next(); //skip ip type
+    _ = slices.next(); //skip terminal type
+    const ip = slices.next();
+    const port_slice = slices.next();
+
+    for (&[_]?[]const u8{ id_slice, ip, port_slice }) |value| {
+        if (value == null) return error.InvalidResponse;
+    }
+
+    const id = std.fmt.parseInt(usize, id_slice.?, 10) catch return error.InvalidId;
+    const port = std.fmt.parseInt(u16, port_slice.?, 10) catch return error.InvalidId;
+
+    return .{
+        .id = id,
+        .remote_port = port,
+        .remote_host = get_cmd_slice(ip.?[1..], &[_]u8{}, &[_]u8{'"'}),
     };
 }
 

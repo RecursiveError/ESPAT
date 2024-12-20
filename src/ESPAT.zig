@@ -157,7 +157,7 @@ pub fn EspAT(comptime driver_config: Config) type {
             .{ "ERROR", Self.error_response },
             .{ "FAIL", Self.error_response },
             .{ "ERR", Self.parser_error_code },
-            .{ ",CONNECT", Self.network_conn_event },
+            .{ "+LINK_CONN", Self.network_conn_event },
             .{ ",CLOSED", Self.network_closed_event },
             .{ "SEND", Self.network_send_event },
             .{ "+IPD", Self.parse_network_data },
@@ -427,18 +427,18 @@ pub fn EspAT(comptime driver_config: Config) type {
         }
 
         fn network_conn_event(self: *Self, aux_buffer: []const u8) DriverError!void {
-            const id_index = aux_buffer[0];
-            if ((id_index < '0') or (id_index > '9')) {
-                return DriverError.INVALID_RESPONSE;
-            }
+            const data = Network.parser_conn_data(aux_buffer) catch return DriverError.INVALID_RESPONSE;
+            const id = data.id;
+            if (id > self.Network_binds.len) return DriverError.INVALID_RESPONSE;
 
-            const index: usize = id_index - '0';
-            if (index > self.Network_binds.len) return DriverError.INVALID_RESPONSE;
-
-            if (self.Network_binds[index]) |*bd| {
+            if (self.Network_binds[id]) |*bd| {
+                bd.client.remote_host = data.remote_host;
+                bd.client.remote_port = data.remote_port;
                 bd.state = .Connected;
                 bd.client.event = .{ .Connected = {} };
                 bd.notify();
+                bd.client.remote_host = null;
+                bd.client.remote_port = null;
             }
         }
 
@@ -748,6 +748,13 @@ pub fn EspAT(comptime driver_config: Config) type {
             cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1{s}", .{ prefix, get_cmd_string(.SYSLOG), postfix }) catch unreachable;
             pkg.cmd_len = cmd_slice.len;
             pkg.cmd_enum = .SYSLOG;
+            pkg.Extra_data = .{ .Command = {} };
+            self.TX_fifo.writeItem(pkg) catch unreachable;
+
+            //enable +LINK msg
+            cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=2{s}", .{ prefix, get_cmd_string(.SYSMSG), postfix }) catch unreachable;
+            pkg.cmd_len = cmd_slice.len;
+            pkg.cmd_enum = .SYSMSG;
             pkg.Extra_data = .{ .Command = {} };
             self.TX_fifo.writeItem(pkg) catch unreachable;
 

@@ -503,14 +503,18 @@ pub fn EspAT(comptime driver_config: Config) type {
             const pkg = self.Network_corrent_pkg;
             //if pkg is invalid, close the send request"
             if (pkg.id < self.Network_binds.len) {
-                self.TX_callback_handler(pkg.data, self.TX_RX_user_data);
                 if (self.Network_binds[pkg.id]) |*bd| {
-                    bd.to_send -= 1;
-                    bd.client.event = .{ .SendDataComplete = pkg.data };
-                    bd.notify();
+                    if (bd.to_send > 0) {
+                        self.TX_callback_handler(pkg.data, self.TX_RX_user_data);
+                        bd.to_send -= 1;
+                        bd.client.event = .{ .SendDataComplete = pkg.data };
+                        bd.notify();
+                    }
                 }
                 return;
             }
+            //send stop code on invalid pkgs (yes stop code is \\0 not \0)
+            self.TX_callback_handler("\\0", self.TX_RX_user_data);
         }
 
         fn apply_WiFi_mac(self: *Self, cmd_data: []const u8, mac: []const u8) void {
@@ -651,7 +655,7 @@ pub fn EspAT(comptime driver_config: Config) type {
                 if (rev_data) |data| {
                     self.internal_aux_buffer[self.internal_aux_buffer_pos] = data;
                     self.internal_aux_buffer_pos += 1;
-                    self.internal_aux_buffer_pos %= self.internal_aux_buffer.len;
+                    self.internal_aux_buffer_pos %= driver_config.network_recv_size;
                     if (data == '\n') {
                         if (self.internal_aux_buffer_pos > 3) {
                             if (self.internal_aux_buffer[0] == '+') {
@@ -667,7 +671,7 @@ pub fn EspAT(comptime driver_config: Config) type {
                             }
                         }
                         self.internal_aux_buffer_pos = 0;
-                    } else if (data == '>') {
+                    } else if ((data == '>') and (self.internal_aux_buffer_pos == 1)) {
                         self.internal_aux_buffer_pos = 0;
                         try self.network_send_data();
                     }
@@ -714,12 +718,30 @@ pub fn EspAT(comptime driver_config: Config) type {
             const rev_data = offset - start; //offset is always at least 3 nytes more than start
             if (rev_data < to_read) {
                 const remain = to_read - rev_data;
-                const read = offset + remain;
+
+                //do not read more than the max buffer size
+                const read: usize = @min(driver_config.network_recv_size, (offset + remain));
                 const rev = self.RX_fifo.read(self.internal_aux_buffer[offset..read]);
                 const new_offset = offset + rev;
-                self.long_data.data_offset = new_offset;
-                if ((new_offset - start) < to_read) {
-                    return;
+                const rev_data_len = new_offset - start;
+                if (new_offset >= driver_config.network_recv_size) {
+                    //if the buffer is full but still have data to read
+                    //send the data and clear the buffer
+                    //**only nescessary for active recv mode**(passive mode never read more than the buffer size)
+                    if (rev_data_len < to_read) {
+                        if (self.Network_binds[id]) |*bd| {
+                            bd.client.event = .{ .ReadData = self.internal_aux_buffer[start..] }; //not include the command response \r\n
+                            bd.notify();
+                        }
+                        self.long_data.data_offset = start;
+                        self.long_data.to_read -= rev_data_len;
+                        return;
+                    }
+                } else {
+                    if (rev_data_len < to_read) {
+                        self.long_data.data_offset = new_offset;
+                        return;
+                    }
                 }
                 offset = new_offset;
             }
@@ -1101,7 +1123,7 @@ pub fn EspAT(comptime driver_config: Config) type {
         }
         pub fn accept(self: *Self, id: usize) DriverError!void {
             if (id >= self.Network_binds.len) return DriverError.INVALID_ARGS;
-            const recv_buffer_size = self.internal_aux_buffer.len - 50; //50 of pre-data
+            const recv_buffer_size = driver_config.network_recv_size - 50; //50bytes  of pre-data
             var pkg: TXEventPkg = .{};
             const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d},{d}{s}", .{
                 prefix,

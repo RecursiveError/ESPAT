@@ -532,6 +532,11 @@ pub fn EspAT(comptime driver_config: Config) type {
             self.TX_callback_handler(config, self.TX_RX_user_data);
         }
 
+        fn apply_DHCP_config(self: *Self, dhcp: WiFi.DHCPConfig) void {
+            const config = WiFi.set_DHCP_config(&self.internal_aux_buffer, dhcp) catch unreachable;
+            self.TX_callback_handler(config, self.TX_RX_user_data);
+        }
+
         fn WiFi_apply_AP_config(self: *Self, config: WiFi.APpkg) void {
             const config_str = WiFi.set_AP_config(&self.internal_aux_buffer, config) catch unreachable;
             self.TX_callback_handler(config_str, self.TX_RX_user_data);
@@ -617,7 +622,10 @@ pub fn EspAT(comptime driver_config: Config) type {
                     self.apply_static_ip(cmd_data, pkg);
                     self.busy_flag.Command = true;
                 },
-                else => {},
+                .dhcp_config => |pkg| {
+                    self.apply_DHCP_config(pkg);
+                    self.busy_flag.Command = true;
+                },
             }
         }
 
@@ -903,8 +911,8 @@ pub fn EspAT(comptime driver_config: Config) type {
                 return DriverError.WIFI_OFF;
             }
             const free_tx = self.get_tx_free_space();
-            if (free_tx < WiFi.calc_STA_pkgs(config)) return DriverError.TX_BUFFER_FULL;
-            try WiFi.check_STA_config(config);
+            const pkgs = try WiFi.check_STA_config(config);
+            if (free_tx < pkgs) return DriverError.TX_BUFFER_FULL;
 
             var pkg: CommandPkg = .{};
 
@@ -975,8 +983,9 @@ pub fn EspAT(comptime driver_config: Config) type {
                 return DriverError.WIFI_OFF;
             }
             const free_tx = self.get_tx_free_space();
-            if (free_tx < WiFi.calc_AP_pkgs(config)) return DriverError.TX_BUFFER_FULL;
-            try WiFi.check_AP_config(config);
+            const pkgs = try WiFi.check_AP_config(config);
+
+            if (free_tx < pkgs) return DriverError.TX_BUFFER_FULL;
 
             var pkg: CommandPkg = .{};
 
@@ -1038,6 +1047,14 @@ pub fn EspAT(comptime driver_config: Config) type {
                         }) catch unreachable;
                     },
                 }
+            }
+
+            if (config.dhcp_config) |dhcp| {
+                self.TX_fifo.writeItem(TXEventPkg{ .cmd_enum = .WiFi_CONF_DHCP, .Extra_data = .{
+                    .WiFi = .{
+                        .dhcp_config = dhcp,
+                    },
+                } }) catch unreachable;
             }
 
             self.TX_fifo.writeItem(TXEventPkg{ .cmd_enum = .WIFI_CONF, .Extra_data = .{

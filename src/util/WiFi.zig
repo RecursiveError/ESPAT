@@ -240,7 +240,8 @@ fn check_DHCP_config(dhcp: DHCPConfig) !void {
 }
 
 //TODO create a real IP and mac verify
-pub fn check_STA_config(config: WiFiSTAConfig) !void {
+pub fn check_STA_config(config: WiFiSTAConfig) !usize {
+    var pkgs: usize = 1;
     const ssid_len = config.ssid.len;
     if ((ssid_len < 1) or (ssid_len > 32)) return WiFiErrors.invalidSSID;
 
@@ -258,9 +259,11 @@ pub fn check_STA_config(config: WiFiSTAConfig) !void {
     if (config.jap_timeout > 600) return WiFiErrors.invalidTimeout;
 
     if (config.wifi_protocol) |proto| {
+        pkgs += 1;
         try check_protocol(proto);
     }
     if (config.wifi_ip) |ip_config| {
+        pkgs += 1;
         switch (ip_config) {
             .static => |ip| {
                 try check_static_ip(ip);
@@ -270,11 +273,15 @@ pub fn check_STA_config(config: WiFiSTAConfig) !void {
     }
 
     if (config.mac) |mac| {
+        pkgs += 1;
         if (mac.len != 17) return error.InvalidMac;
     }
+    return pkgs;
 }
+
 //TODO create a real IP and mac verify
-pub fn check_AP_config(config: WiFiAPConfig) !void {
+pub fn check_AP_config(config: WiFiAPConfig) !usize {
+    var pkgs: usize = 1;
     const ssid_len = config.ssid.len;
     if ((ssid_len < 1) or (ssid_len > 32)) return WiFiErrors.invalidSSID;
 
@@ -289,10 +296,12 @@ pub fn check_AP_config(config: WiFiAPConfig) !void {
     }
 
     if (config.wifi_protocol) |proto| {
+        pkgs += 1;
         try check_protocol(proto);
     }
 
     if (config.wifi_ip) |ip_config| {
+        pkgs += 1;
         switch (ip_config) {
             .static => |ip| {
                 try check_static_ip(ip);
@@ -302,12 +311,15 @@ pub fn check_AP_config(config: WiFiAPConfig) !void {
     }
 
     if (config.dhcp_config) |dhcp| {
+        pkgs += 1;
         try check_DHCP_config(dhcp);
     }
 
     if (config.mac) |mac| {
+        pkgs += 1;
         if (mac.len != 17) return error.InvalidMac;
     }
+    return pkgs;
 }
 
 pub fn set_AP_config(out_buffer: []u8, config: APpkg) ![]const u8 {
@@ -417,19 +429,16 @@ pub fn set_static_ip(out_buffer: []u8, cmd: cmd_enum, static_ip: StaticIp) ![]co
     return out_buffer[0..cmd_size];
 }
 
-pub fn calc_AP_pkgs(base: WiFiAPConfig) usize {
-    var pkgs: usize = 1;
-    if (base.dhcp_config != null) pkgs += 1;
-    if (base.wifi_ip != null) pkgs += 1;
-    if (base.mac != null) pkgs += 1;
-    if (base.wifi_protocol != null) pkgs += 1;
-    return pkgs;
-}
-
-pub fn calc_STA_pkgs(base: WiFiSTAConfig) usize {
-    var pkgs: usize = 1;
-    if (base.wifi_ip != null) pkgs += 1;
-    if (base.mac != null) pkgs += 1;
-    if (base.wifi_protocol != null) pkgs += 1;
-    return pkgs;
+pub fn set_DHCP_config(out_buffer: []u8, config: DHCPConfig) ![]const u8 {
+    if (out_buffer.len < 100) return error.BufferTooSmall;
+    const cmd_slice = std.fmt.bufPrint(out_buffer, "{s}{s}=1,{d},\"{s}\",\"{s}\"{s}", .{
+        prefix,
+        Commands.get_cmd_string(.WiFi_CONF_DHCP),
+        config.lease,
+        config.start_ip,
+        config.end_ip,
+        postfix,
+    }) catch unreachable;
+    const cmd_size = cmd_slice.len;
+    return out_buffer[0..cmd_size];
 }

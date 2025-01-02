@@ -1,5 +1,8 @@
 const std = @import("std");
-const postfix = @import("commands.zig").postfix;
+const Commands = @import("commands.zig");
+const prefix = Commands.prefix;
+const postfix = Commands.postfix;
+const cmd_enum = Commands.Commands;
 
 pub const WiFiErrors = error{
     invalidSSID,
@@ -47,6 +50,32 @@ pub const DHCPEnable = packed struct(u2) {
 
 pub const WiFiDHCPMode = packed struct(u3) {};
 
+pub const STApkg = struct {
+    ssid: []const u8,
+    pwd: ?[]const u8,
+    bssid: ?[]const u8,
+    pci_en: u1,
+    reconn_interval: u32,
+    listen_interval: u32,
+    scan_mode: u1,
+    jap_timeout: u32,
+    pmf: u1,
+
+    pub fn from_config(config: WiFiSTAConfig) STApkg {
+        return STApkg{
+            .ssid = config.ssid,
+            .pwd = config.pwd,
+            .bssid = config.bssid,
+            .pci_en = config.pci_en,
+            .reconn_interval = config.reconn_interval,
+            .listen_interval = config.listen_interval,
+            .scan_mode = config.scan_mode,
+            .jap_timeout = config.jap_timeout,
+            .pmf = config.pmf,
+        };
+    }
+};
+
 pub const WiFiSTAConfig = struct {
     ssid: []const u8,
     pwd: ?[]const u8 = null,
@@ -63,6 +92,26 @@ pub const WiFiSTAConfig = struct {
     wifi_ip: ?WiFiIp = null,
 };
 
+pub const APpkg = struct {
+    ssid: []const u8,
+    pwd: ?[]const u8,
+    channel: u8,
+    ecn: WiFiEncryption,
+    max_conn: u4,
+    hidden_ssid: u1,
+
+    pub fn from_config(config: WiFiAPConfig) APpkg {
+        return APpkg{
+            .ssid = config.ssid,
+            .pwd = config.pwd,
+            .channel = config.channel,
+            .ecn = config.ecn,
+            .max_conn = config.max_conn,
+            .hidden_ssid = config.hidden_ssid,
+        };
+    }
+};
+
 pub const WiFiAPConfig = struct {
     ssid: []const u8,
     pwd: ?[]const u8 = null,
@@ -70,6 +119,7 @@ pub const WiFiAPConfig = struct {
     ecn: WiFiEncryption,
     max_conn: u4 = 10,
     hidden_ssid: u1 = 0,
+
     wifi_protocol: ?WiFiProtocol = null,
     mac: ?[]const u8 = null,
     wifi_ip: ?WiFiIp = null,
@@ -260,11 +310,15 @@ pub fn check_AP_config(config: WiFiAPConfig) !void {
     }
 }
 
-pub fn set_AP_config(out_buffer: []u8, cmd: []const u8, config: WiFiAPConfig) ![]const u8 {
+pub fn set_AP_config(out_buffer: []u8, config: APpkg) ![]const u8 {
     if (out_buffer.len < 200) return error.BufferTooSmall;
     var cmd_slice: []u8 = undefined;
     var cmd_size: usize = 0;
-    cmd_slice = std.fmt.bufPrint(out_buffer, "{s}\"{s}\",", .{ cmd, config.ssid }) catch unreachable;
+    cmd_slice = std.fmt.bufPrint(out_buffer, "{s}{s}=\"{s}\",", .{
+        prefix,
+        Commands.get_cmd_string(.WIFI_CONF),
+        config.ssid,
+    }) catch unreachable;
     cmd_size += cmd_slice.len;
     if (config.pwd) |pwd| {
         cmd_slice = std.fmt.bufPrint(out_buffer[cmd_size..], "\"{s}\",", .{pwd}) catch unreachable;
@@ -289,11 +343,15 @@ pub fn set_AP_config(out_buffer: []u8, cmd: []const u8, config: WiFiAPConfig) ![
     return out_buffer[0..cmd_size];
 }
 
-pub fn set_STA_config(out_buffer: []u8, cmd: []const u8, config: WiFiSTAConfig) ![]const u8 {
+pub fn set_STA_config(out_buffer: []u8, config: STApkg) ![]const u8 {
     if (out_buffer.len < 200) return error.BufferTooSmall;
     var cmd_slice: []u8 = undefined;
     var cmd_size: usize = 0;
-    cmd_slice = std.fmt.bufPrint(out_buffer, "{s}\"{s}\",", .{ cmd, config.ssid }) catch unreachable;
+    cmd_slice = std.fmt.bufPrint(out_buffer, "{s}{s}=\"{s}\",", .{
+        prefix,
+        Commands.get_cmd_string(.WIFI_CONNECT),
+        config.ssid,
+    }) catch unreachable;
     cmd_size += cmd_slice.len;
     if (config.pwd) |pwd| {
         cmd_slice = std.fmt.bufPrint(out_buffer[cmd_size..], "\"{s}\",", .{pwd}) catch unreachable;
@@ -323,20 +381,29 @@ pub fn set_STA_config(out_buffer: []u8, cmd: []const u8, config: WiFiSTAConfig) 
     return out_buffer[0..cmd_size];
 }
 
-pub fn set_mac(out_buffer: []u8, cmd: []const u8, mac: []const u8) ![]const u8 {
+pub fn set_mac(out_buffer: []u8, cmd: cmd_enum, mac: []const u8) ![]const u8 {
     if (out_buffer.len < 50) return error.BufferTooSmall;
     var cmd_slice: []u8 = undefined;
     var cmd_size: usize = 0;
-    cmd_slice = std.fmt.bufPrint(out_buffer, "{s}\"{s}\"{s}", .{ cmd, mac, postfix }) catch unreachable;
+    cmd_slice = std.fmt.bufPrint(out_buffer, "{s}{s}=\"{s}\"{s}", .{
+        prefix,
+        Commands.get_cmd_string(cmd),
+        mac,
+        postfix,
+    }) catch unreachable;
     cmd_size += cmd_slice.len;
     return out_buffer[0..cmd_size];
 }
 
-pub fn set_static_ip(out_buffer: []u8, cmd: []const u8, static_ip: StaticIp) ![]const u8 {
+pub fn set_static_ip(out_buffer: []u8, cmd: cmd_enum, static_ip: StaticIp) ![]const u8 {
     if (out_buffer.len < 50) return error.BufferTooSmall;
     var cmd_slice: []u8 = undefined;
     var cmd_size: usize = 0;
-    cmd_slice = std.fmt.bufPrint(out_buffer, "{s}\"{s}\"", .{ cmd, static_ip.ip }) catch unreachable;
+    cmd_slice = std.fmt.bufPrint(out_buffer, "{s}{s}=\"{s}\"", .{
+        prefix,
+        Commands.get_cmd_string(cmd),
+        static_ip.ip,
+    }) catch unreachable;
     cmd_size += cmd_slice.len;
 
     if (static_ip.gateway) |gataway| {

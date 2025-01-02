@@ -92,7 +92,7 @@ pub const ServerConfig = struct {
 pub const NetworkPackageType = union(enum) {
     NetworkSendPkg: NetworkSendPkg,
     NetworkSendToPkg: NetworkSendToPkg,
-    NetworkAcceptPkg: void,
+    NetworkAcceptPkg: usize,
     NetworkClosePkg: void,
     ConnectConfig: ConnectConfig,
 };

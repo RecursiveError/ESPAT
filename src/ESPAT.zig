@@ -86,14 +86,19 @@ pub const BusyBitFlags = packed struct {
     Bluetooth: bool = false,
 };
 
+pub const CommandPkg = struct {
+    str: [60]u8 = undefined,
+    len: usize = 0,
+};
+
 pub const NetworkPackage = struct {
     descriptor_id: usize = 255,
     pkg_type: NetworkPackageType,
 };
 
 pub const WiFiPackage = union(enum) {
-    AP_conf_pkg: WiFiAPConfig,
-    STA_conf_pkg: WiFiSTAConfig,
+    AP_conf_pkg: WiFi.APpkg,
+    STA_conf_pkg: WiFi.STApkg,
     static_ap_config: WiFi.StaticIp,
     dhcp_config: WiFi.DHCPConfig,
     MAC_config: []const u8,
@@ -105,17 +110,15 @@ pub const BluetoothPackage = struct {
 
 pub const TXExtraData = union(enum) {
     Reset: void,
-    Command: void,
+    Command: CommandPkg,
     Socket: NetworkPackage,
     WiFi: WiFiPackage,
     Bluetooth: BluetoothPackage,
 };
 
 pub const TXEventPkg = struct {
-    cmd_data: [25]u8 = undefined, //maybe renove this end just create "apply" methods for each command and save some memory
-    cmd_len: usize = 0,
-    cmd_enum: Commands = .DUMMY,
-    Extra_data: TXExtraData = .{ .Command = {} },
+    cmd_enum: Commands,
+    Extra_data: TXExtraData,
 };
 
 const NetworkToRead = struct {
@@ -317,11 +320,13 @@ pub fn EspAT(comptime driver_config: Config) type {
             };
 
             if (base_event == .AP_CONNECTED) {
-                var pkg: TXEventPkg = .{};
-                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}?{s}", .{ prefix, get_cmd_string(.WIFI_STA_IP), postfix }) catch unreachable;
-                pkg.cmd_len = cmd_slice.len;
-                pkg.cmd_enum = .WIFI_STA_IP;
-                self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
+                var pkg: CommandPkg = .{};
+                const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}?{s}", .{ prefix, get_cmd_string(.WIFI_STA_IP), postfix }) catch unreachable;
+                pkg.len = cmd_slice.len;
+                self.TX_fifo.writeItem(TXEventPkg{
+                    .cmd_enum = .WIFI_STA_IP,
+                    .Extra_data = .{ .Command = pkg },
+                }) catch return DriverError.TX_BUFFER_FULL;
             }
             if (self.on_WiFi_event) |callback| {
                 callback(event, self.WiFi_user_data);
@@ -517,24 +522,35 @@ pub fn EspAT(comptime driver_config: Config) type {
             self.TX_callback_handler("\\0", self.TX_RX_user_data);
         }
 
-        fn apply_WiFi_mac(self: *Self, cmd_data: []const u8, mac: []const u8) void {
+        fn apply_WiFi_mac(self: *Self, cmd_data: Commands, mac: []const u8) void {
             const config = WiFi.set_mac(&self.internal_aux_buffer, cmd_data, mac) catch unreachable;
             self.TX_callback_handler(config, self.TX_RX_user_data);
         }
 
-        fn apply_static_ip(self: *Self, cmd_data: []const u8, ip: WiFi.StaticIp) void {
+        fn apply_static_ip(self: *Self, cmd_data: Commands, ip: WiFi.StaticIp) void {
             const config = WiFi.set_static_ip(&self.internal_aux_buffer, cmd_data, ip) catch unreachable;
             self.TX_callback_handler(config, self.TX_RX_user_data);
         }
 
-        fn WiFi_apply_AP_config(self: *Self, cmd: []const u8, config: WiFiAPConfig) void {
-            const config_str = WiFi.set_AP_config(&self.internal_aux_buffer, cmd, config) catch unreachable;
+        fn WiFi_apply_AP_config(self: *Self, config: WiFi.APpkg) void {
+            const config_str = WiFi.set_AP_config(&self.internal_aux_buffer, config) catch unreachable;
             self.TX_callback_handler(config_str, self.TX_RX_user_data);
         }
 
-        fn WiFi_apply_STA_config(self: *Self, cmd: []const u8, config: WiFiSTAConfig) void {
-            const config_str = WiFi.set_STA_config(&self.internal_aux_buffer, cmd, config) catch unreachable;
+        fn WiFi_apply_STA_config(self: *Self, config: WiFi.STApkg) void {
+            const config_str = WiFi.set_STA_config(&self.internal_aux_buffer, config) catch unreachable;
             self.TX_callback_handler(config_str, self.TX_RX_user_data);
+        }
+
+        fn apply_send(self: *Self, id: usize, data_len: usize) void {
+            const cmd = std.fmt.bufPrint(&self.internal_aux_buffer, "{s}{s}={d},{d}{s}", .{
+                prefix,
+                get_cmd_string(.NETWORK_SEND),
+                id,
+                data_len,
+                postfix,
+            }) catch unreachable;
+            self.TX_callback_handler(cmd, self.TX_RX_user_data);
         }
 
         fn apply_tcp_config(self: *Self, id: usize, args: ConnectConfig, tcp_conf: NetworkTCPConn) void {
@@ -546,9 +562,12 @@ pub fn EspAT(comptime driver_config: Config) type {
             self.TX_callback_handler(config, self.TX_RX_user_data);
         }
 
-        fn apply_udp_send(self: *Self, cmd_data: []const u8, data: Network.NetworkSendToPkg) void {
-            const cmd = std.fmt.bufPrint(&self.internal_aux_buffer, "{s},\"{s}\",{d}{s}", .{
-                cmd_data,
+        fn apply_udp_send(self: *Self, id: usize, data: Network.NetworkSendToPkg) void {
+            const cmd = std.fmt.bufPrint(&self.internal_aux_buffer, "{s}{s}={d},{d},\"{s}\",{d}{s}", .{
+                prefix,
+                get_cmd_string(.NETWORK_SEND),
+                id,
+                data.data.len,
                 data.remote_host,
                 data.remote_port,
                 postfix,
@@ -557,14 +576,37 @@ pub fn EspAT(comptime driver_config: Config) type {
             self.TX_callback_handler(cmd, self.TX_RX_user_data);
         }
 
-        fn handler_WiFi_TX(self: *Self, cmd_data: []const u8, data: WiFiPackage) void {
+        fn apply_accept(self: *Self, id: usize, len: usize) void {
+            const cmd = std.fmt.bufPrint(&self.internal_aux_buffer, "{s}{s}={d},{d}{s}", .{
+                prefix,
+                get_cmd_string(.NETWORK_RECV),
+                id,
+                len,
+                postfix,
+            }) catch unreachable;
+
+            self.TX_callback_handler(cmd, self.TX_RX_user_data);
+        }
+
+        fn apply_close(self: *Self, id: usize) void {
+            const cmd = std.fmt.bufPrint(&self.internal_aux_buffer, "{s}{s}={d}{s}", .{
+                prefix,
+                get_cmd_string(.NETWORK_CLOSE),
+                id,
+                postfix,
+            }) catch unreachable;
+
+            self.TX_callback_handler(cmd, self.TX_RX_user_data);
+        }
+
+        fn handler_WiFi_TX(self: *Self, cmd_data: Commands, data: WiFiPackage) void {
             switch (data) {
                 .AP_conf_pkg => |pkg| {
-                    self.WiFi_apply_AP_config(cmd_data, pkg);
+                    self.WiFi_apply_AP_config(pkg);
                     self.busy_flag.Command = true;
                 },
                 .STA_conf_pkg => |pkg| {
-                    self.WiFi_apply_STA_config(cmd_data, pkg);
+                    self.WiFi_apply_STA_config(pkg);
                     self.busy_flag.WiFi = true;
                 },
                 .MAC_config => |pkg| {
@@ -579,11 +621,11 @@ pub fn EspAT(comptime driver_config: Config) type {
             }
         }
 
-        fn handler_socket_TX(self: *Self, cmd_data: []const u8, data: NetworkPackage) void {
+        fn handler_socket_TX(self: *Self, data: NetworkPackage) void {
             const id = data.descriptor_id;
             switch (data.pkg_type) {
                 .NetworkSendPkg => |to_send| {
-                    self.TX_callback_handler(cmd_data, self.TX_RX_user_data);
+                    self.apply_send(id, to_send.data.len);
                     self.Network_corrent_pkg = NetworkToSend{
                         .data = to_send.data,
                         .id = id,
@@ -591,20 +633,20 @@ pub fn EspAT(comptime driver_config: Config) type {
                     self.busy_flag.Socket = true;
                 },
                 .NetworkSendToPkg => |to_send| {
-                    self.apply_udp_send(cmd_data, to_send);
+                    self.apply_udp_send(id, to_send);
                     self.Network_corrent_pkg = NetworkToSend{
                         .data = to_send.data,
                         .id = id,
                     };
                     self.busy_flag.Socket = true;
                 },
-                .NetworkAcceptPkg => {
+                .NetworkAcceptPkg => |size| {
                     self.long_data.id = id;
-                    self.TX_callback_handler(cmd_data, self.TX_RX_user_data);
+                    self.apply_accept(id, size);
                     self.busy_flag.Command = true;
                 },
                 .NetworkClosePkg => {
-                    self.TX_callback_handler(cmd_data, self.TX_RX_user_data);
+                    self.apply_close(id);
                     self.busy_flag.Command = true;
                     if (self.Network_binds[id]) |*bd| {
                         bd.to_send -= 1;
@@ -686,22 +728,23 @@ pub fn EspAT(comptime driver_config: Config) type {
             if (busy_bits != 0) return;
             const next_cmd = self.TX_fifo.readItem();
             if (next_cmd) |cmd| {
-                const cmd_data = cmd.cmd_data[0..cmd.cmd_len];
                 self.TX_wait_response = cmd.cmd_enum;
                 switch (cmd.Extra_data) {
                     .Reset => {
                         self.TX_callback_handler("AT+RST\r\n", self.TX_RX_user_data);
                         self.busy_flag.Reset = true;
                     },
-                    .Command => {
-                        self.TX_callback_handler(cmd_data, self.TX_RX_user_data);
+                    .Command => |cmd_data| {
+                        const str = cmd_data.str;
+                        const len = cmd_data.len;
+                        self.TX_callback_handler(str[0..len], self.TX_RX_user_data);
                         self.busy_flag.Command = true;
                     },
                     .Socket => |data| {
-                        self.handler_socket_TX(cmd_data, data);
+                        self.handler_socket_TX(data);
                     },
                     .WiFi => |data| {
-                        self.handler_WiFi_TX(cmd_data, data);
+                        self.handler_WiFi_TX(cmd.cmd_enum, data);
                     },
                     .Bluetooth => {
                         //TODO
@@ -764,61 +807,77 @@ pub fn EspAT(comptime driver_config: Config) type {
             self.TX_fifo.discard(self.TX_fifo.readableLength());
 
             //send dummy cmd to clear the module input
-            var pkg: TXEventPkg = .{};
-            var cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}", .{ get_cmd_string(.DUMMY), postfix }) catch unreachable;
-            pkg.cmd_len = cmd_slice.len;
-            self.TX_fifo.writeItem(pkg) catch unreachable;
+            var pkg: CommandPkg = .{};
+            var cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}", .{ get_cmd_string(.DUMMY), postfix }) catch unreachable;
+            pkg.len = cmd_slice.len;
+            self.TX_fifo.writeItem(
+                TXEventPkg{
+                    .cmd_enum = .DUMMY,
+                    .Extra_data = .{ .Command = pkg },
+                },
+            ) catch unreachable;
 
             //send RST request
-            pkg.cmd_enum = .RESET;
-            pkg.Extra_data = .{ .Reset = {} };
-            self.TX_fifo.writeItem(pkg) catch unreachable;
+            self.TX_fifo.writeItem(TXEventPkg{
+                .cmd_enum = .RESET,
+                .Extra_data = .{ .Reset = {} },
+            }) catch unreachable;
 
             //desable ECHO
-            cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}", .{ get_cmd_string(.ECHO_OFF), postfix }) catch unreachable;
-            pkg.cmd_len = cmd_slice.len;
-            pkg.cmd_enum = .ECHO_OFF;
-            pkg.Extra_data = .{ .Command = {} };
-            self.TX_fifo.writeItem(pkg) catch unreachable;
+            cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}", .{ get_cmd_string(.ECHO_OFF), postfix }) catch unreachable;
+            pkg.len = cmd_slice.len;
+            self.TX_fifo.writeItem(TXEventPkg{
+                .cmd_enum = .ECHO_OFF,
+                .Extra_data = .{ .Command = pkg },
+            }) catch unreachable;
 
             //disable sysstore
-            cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=0{s}", .{ prefix, get_cmd_string(.SYSSTORE), postfix }) catch unreachable;
-            pkg.cmd_len = cmd_slice.len;
-            pkg.cmd_enum = .SYSSTORE;
-            self.TX_fifo.writeItem(pkg) catch unreachable;
+            cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=0{s}", .{ prefix, get_cmd_string(.SYSSTORE), postfix }) catch unreachable;
+            pkg.len = cmd_slice.len;
+            self.TX_fifo.writeItem(TXEventPkg{
+                .cmd_enum = .SYSSTORE,
+                .Extra_data = .{ .Command = pkg },
+            }) catch unreachable;
 
             //enable error logs
-            cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1{s}", .{ prefix, get_cmd_string(.SYSLOG), postfix }) catch unreachable;
-            pkg.cmd_len = cmd_slice.len;
-            pkg.cmd_enum = .SYSLOG;
-            pkg.Extra_data = .{ .Command = {} };
-            self.TX_fifo.writeItem(pkg) catch unreachable;
+            cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=1{s}", .{ prefix, get_cmd_string(.SYSLOG), postfix }) catch unreachable;
+            pkg.len = cmd_slice.len;
+            self.TX_fifo.writeItem(TXEventPkg{
+                .cmd_enum = .SYSLOG,
+                .Extra_data = .{ .Command = pkg },
+            }) catch unreachable;
 
             //enable +LINK msg
-            cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=2{s}", .{ prefix, get_cmd_string(.SYSMSG), postfix }) catch unreachable;
-            pkg.cmd_len = cmd_slice.len;
-            pkg.cmd_enum = .SYSMSG;
-            pkg.Extra_data = .{ .Command = {} };
-            self.TX_fifo.writeItem(pkg) catch unreachable;
+            cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=2{s}", .{ prefix, get_cmd_string(.SYSMSG), postfix }) catch unreachable;
+            pkg.len = cmd_slice.len;
+            self.TX_fifo.writeItem(TXEventPkg{
+                .cmd_enum = .SYSMSG,
+                .Extra_data = .{ .Command = pkg },
+            }) catch unreachable;
 
             //enable IP info
-            cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1{s}", .{ prefix, get_cmd_string(.NETWORK_MSG_CONFIG), postfix }) catch unreachable;
-            pkg.cmd_len = cmd_slice.len;
-            pkg.cmd_enum = .NETWORK_MSG_CONFIG;
-            pkg.Extra_data = .{ .Command = {} };
-            self.TX_fifo.writeItem(pkg) catch unreachable;
+            cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=1{s}", .{ prefix, get_cmd_string(.NETWORK_MSG_CONFIG), postfix }) catch unreachable;
+            pkg.len = cmd_slice.len;
+            self.TX_fifo.writeItem(TXEventPkg{
+                .cmd_enum = .NETWORK_MSG_CONFIG,
+                .Extra_data = .{ .Command = pkg },
+            }) catch unreachable;
 
             //enable multi-conn
-            cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1{s}", .{ prefix, get_cmd_string(Commands.IP_MUX), postfix }) catch unreachable;
-            pkg.cmd_len = cmd_slice.len;
-            pkg.cmd_enum = .IP_MUX;
-            self.TX_fifo.writeItem(pkg) catch unreachable;
+            cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=1{s}", .{ prefix, get_cmd_string(.IP_MUX), postfix }) catch unreachable;
+            pkg.len = cmd_slice.len;
+            self.TX_fifo.writeItem(TXEventPkg{
+                .cmd_enum = .IP_MUX,
+                .Extra_data = .{ .Command = pkg },
+            }) catch unreachable;
 
             //disable wifi auto connection
-            cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=0{s}", .{ prefix, get_cmd_string(.WIFI_AUTOCONN), postfix }) catch unreachable;
-            pkg.cmd_len = cmd_slice.len;
-            pkg.cmd_enum = .WIFI_AUTOCONN;
-            self.TX_fifo.writeItem(pkg) catch unreachable;
+            cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=0{s}", .{ prefix, get_cmd_string(.WIFI_AUTOCONN), postfix }) catch unreachable;
+            pkg.len = cmd_slice.len;
+            self.TX_fifo.writeItem(TXEventPkg{
+                .cmd_enum = .WIFI_AUTOCONN,
+                .Extra_data = .{ .Command = pkg },
+            }) catch unreachable;
 
             self.machine_state = Drive_states.IDLE;
         }
@@ -847,65 +906,66 @@ pub fn EspAT(comptime driver_config: Config) type {
             if (free_tx < WiFi.calc_STA_pkgs(config)) return DriverError.TX_BUFFER_FULL;
             try WiFi.check_STA_config(config);
 
-            var pkg: TXEventPkg = .{};
+            var pkg: CommandPkg = .{};
 
             if (config.wifi_protocol) |proto| {
-                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d}{s}", .{
+                const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}={d}{s}", .{
                     prefix,
                     get_cmd_string(.WIFI_STA_PROTO),
                     @as(u4, @bitCast(proto)),
                     postfix,
                 }) catch unreachable;
-                pkg.cmd_len = cmd_slice.len;
-                pkg.cmd_enum = .WIFI_STA_PROTO;
-                self.TX_fifo.writeItem(pkg) catch unreachable;
+                pkg.len = cmd_slice.len;
+                self.TX_fifo.writeItem(TXEventPkg{
+                    .cmd_enum = .WIFI_STA_PROTO,
+                    .Extra_data = .{ .Command = pkg },
+                }) catch unreachable;
             }
 
             if (config.mac) |mac| {
-                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{
-                    prefix,
-                    get_cmd_string(.WIFI_STA_MAC),
+                self.TX_fifo.writeItem(TXEventPkg{
+                    .cmd_enum = .WIFI_STA_MAC,
+                    .Extra_data = .{
+                        .WiFi = .{ .MAC_config = mac },
+                    },
                 }) catch unreachable;
-                pkg.cmd_len = cmd_slice.len;
-                pkg.cmd_enum = .WIFI_STA_MAC;
-                pkg.Extra_data = .{ .WiFi = .{ .MAC_config = mac } };
-                self.TX_fifo.writeItem(pkg) catch unreachable;
             }
 
             if (config.wifi_ip) |ip_mode| {
                 switch (ip_mode) {
                     .DHCP => {
                         self.WiFi_dhcp.STA = 1;
-                        const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1,{d}{s}", .{
+                        const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=1,{d}{s}", .{
                             prefix,
                             get_cmd_string(.WiFi_SET_DHCP),
                             @as(u2, @bitCast(self.WiFi_dhcp)),
                             postfix,
                         }) catch unreachable;
-                        pkg.cmd_len = cmd_slice.len;
-                        pkg.cmd_enum = .WiFi_SET_DHCP;
-                        pkg.Extra_data = .{ .Command = {} };
-                        self.TX_fifo.writeItem(pkg) catch unreachable;
+                        pkg.len = cmd_slice.len;
+                        self.TX_fifo.writeItem(TXEventPkg{
+                            .cmd_enum = .WiFi_SET_DHCP,
+                            .Extra_data = .{ .Command = pkg },
+                        }) catch unreachable;
                     },
                     .static => |static_ip| {
                         self.WiFi_dhcp.STA = 0;
-                        const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{
-                            prefix,
-                            get_cmd_string(.WIFI_STA_IP),
+                        self.TX_fifo.writeItem(TXEventPkg{
+                            .cmd_enum = .WIFI_STA_IP,
+                            .Extra_data = .{
+                                .WiFi = .{
+                                    .static_ap_config = static_ip,
+                                },
+                            },
                         }) catch unreachable;
-                        pkg.cmd_len = cmd_slice.len;
-                        pkg.cmd_enum = .WIFI_STA_IP;
-                        pkg.Extra_data = .{ .WiFi = .{ .static_ap_config = static_ip } };
-                        self.TX_fifo.writeItem(pkg) catch unreachable;
                     },
                 }
             }
 
-            const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{ prefix, get_cmd_string(.WIFI_CONNECT) }) catch unreachable;
-            pkg.cmd_len = cmd_slice.len;
-            pkg.cmd_enum = .WIFI_CONNECT;
-            pkg.Extra_data = .{ .WiFi = .{ .STA_conf_pkg = config } };
-            self.TX_fifo.writeItem(pkg) catch unreachable;
+            self.TX_fifo.writeItem(TXEventPkg{ .cmd_enum = .WIFI_CONNECT, .Extra_data = .{
+                .WiFi = .{
+                    .STA_conf_pkg = WiFi.STApkg.from_config(config),
+                },
+            } }) catch unreachable;
         }
 
         pub fn WiFi_config_AP(self: *Self, config: WiFiAPConfig) !void {
@@ -918,102 +978,109 @@ pub fn EspAT(comptime driver_config: Config) type {
             if (free_tx < WiFi.calc_AP_pkgs(config)) return DriverError.TX_BUFFER_FULL;
             try WiFi.check_AP_config(config);
 
-            var pkg: TXEventPkg = .{};
+            var pkg: CommandPkg = .{};
 
             if (config.wifi_protocol) |proto| {
-                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d}{s}", .{
+                const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}={d}{s}", .{
                     prefix,
                     get_cmd_string(.WIFI_AP_PROTO),
                     @as(u4, @bitCast(proto)),
                     postfix,
                 }) catch unreachable;
-                pkg.cmd_len = cmd_slice.len;
-                pkg.cmd_enum = .WIFI_AP_PROTO;
-                self.TX_fifo.writeItem(pkg) catch unreachable;
+                pkg.len = cmd_slice.len;
+                self.TX_fifo.writeItem(TXEventPkg{
+                    .cmd_enum = .WIFI_AP_PROTO,
+                    .Extra_data = .{ .Command = pkg },
+                }) catch unreachable;
             }
 
             if (config.mac) |mac| {
-                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{
-                    prefix,
-                    get_cmd_string(.WIFI_AP_MAC),
+                self.TX_fifo.writeItem(TXEventPkg{
+                    .cmd_enum = .WIFI_AP_MAC,
+                    .Extra_data = .{
+                        .WiFi = .{
+                            .MAC_config = mac,
+                        },
+                    },
                 }) catch unreachable;
-                pkg.cmd_len = cmd_slice.len;
-                pkg.cmd_enum = .WIFI_AP_MAC;
-                pkg.Extra_data = .{ .WiFi = .{ .MAC_config = mac } };
-                self.TX_fifo.writeItem(pkg) catch unreachable;
             }
 
             if (config.wifi_ip) |ip_mode| {
                 switch (ip_mode) {
                     .DHCP => {
                         self.WiFi_dhcp.AP = 1;
-                        const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1,{d}{s}", .{
+                        const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=1,{d}{s}", .{
                             prefix,
                             get_cmd_string(.WiFi_SET_DHCP),
                             @as(u2, @bitCast(self.WiFi_dhcp)),
                             postfix,
                         }) catch unreachable;
-                        pkg.cmd_len = cmd_slice.len;
-                        pkg.cmd_enum = .WiFi_SET_DHCP;
-                        pkg.Extra_data = .{ .Command = {} };
-                        self.TX_fifo.writeItem(pkg) catch unreachable;
+                        pkg.len = cmd_slice.len;
+                        self.TX_fifo.writeItem(TXEventPkg{
+                            .cmd_enum = .WiFi_SET_DHCP,
+                            .Extra_data = .{ .Command = pkg },
+                        }) catch unreachable;
                     },
                     .static => |static_ip| {
                         self.WiFi_dhcp.AP = 0;
-                        const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{
+                        const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=", .{
                             prefix,
                             get_cmd_string(.WIFI_AP_IP),
                         }) catch unreachable;
-                        pkg.cmd_len = cmd_slice.len;
-                        pkg.cmd_enum = .WIFI_AP_IP;
-                        pkg.Extra_data = .{ .WiFi = .{ .static_ap_config = static_ip } };
-                        self.TX_fifo.writeItem(pkg) catch unreachable;
+                        pkg.len = cmd_slice.len;
+                        self.TX_fifo.writeItem(TXEventPkg{
+                            .cmd_enum = .WIFI_AP_IP,
+                            .Extra_data = .{
+                                .WiFi = .{
+                                    .static_ap_config = static_ip,
+                                },
+                            },
+                        }) catch unreachable;
                     },
                 }
             }
 
-            const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{ prefix, get_cmd_string(.WIFI_CONF) }) catch unreachable;
-            pkg.cmd_len = cmd_slice.len;
-            pkg.cmd_enum = .WIFI_CONF;
-            pkg.Extra_data = .{ .WiFi = .{ .AP_conf_pkg = config } };
-            self.TX_fifo.writeItem(pkg) catch unreachable;
+            self.TX_fifo.writeItem(TXEventPkg{ .cmd_enum = .WIFI_CONF, .Extra_data = .{
+                .WiFi = .{
+                    .AP_conf_pkg = WiFi.APpkg.from_config(config),
+                },
+            } }) catch unreachable;
         }
 
         pub fn set_WiFi_mode(self: *Self, mode: WiFiDriverMode) !void {
-            var pkg: TXEventPkg = .{};
-            const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d}{s}", .{ prefix, get_cmd_string(.WIFI_SET_MODE), @intFromEnum(mode), postfix }) catch unreachable;
-            pkg.cmd_len = cmd_slice.len;
-            pkg.cmd_enum = .WIFI_SET_MODE;
-            self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
+            var pkg: CommandPkg = .{};
+            const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}={d}{s}", .{ prefix, get_cmd_string(.WIFI_SET_MODE), @intFromEnum(mode), postfix }) catch unreachable;
+            pkg.len = cmd_slice.len;
+            self.TX_fifo.writeItem(TXEventPkg{
+                .cmd_enum = .WIFI_SET_MODE,
+                .Extra_data = .{ .Command = pkg },
+            }) catch return DriverError.TX_BUFFER_FULL;
             self.Wifi_mode = mode;
         }
 
         pub fn WiFi_disconnect(self: *Self) DriverError!void {
-            var pkg: TXEventPkg = .{};
-            const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}{s}", .{
+            var pkg: CommandPkg = .{};
+            const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}{s}", .{
                 prefix,
                 get_cmd_string(.WIFI_DISCONNECT),
                 postfix,
             }) catch unreachable;
-            pkg.cmd_len = cmd_slice.len;
-            pkg.cmd_enum = .WIFI_DISCONNECT;
-            self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
+            pkg.len = cmd_slice.len;
+            self.TX_fifo.writeItem(TXEventPkg{
+                .cmd_enum = .WIFI_DISCONNECT,
+                .Extra_data = .{ .Command = pkg },
+            }) catch return DriverError.TX_BUFFER_FULL;
         }
 
         pub fn WiFi_disconnect_device(self: *Self, mac: []const u8) DriverError!void {
-            var pkg: TXEventPkg = .{};
-            const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=", .{
-                prefix,
-                get_cmd_string(.WIFI_DISCONNECT_DEVICE),
-            }) catch unreachable;
-            pkg.cmd_len = cmd_slice.len;
-            pkg.cmd_enum = .WIFI_DISCONNECT_DEVICE;
-            pkg.Extra_data = .{
-                .WiFi = .{
-                    .MAC_config = mac,
+            self.TX_fifo.writeItem(TXEventPkg{
+                .cmd_enum = .WIFI_DISCONNECT_DEVICE,
+                .Extra_data = .{
+                    .WiFi = .{
+                        .MAC_config = mac,
+                    },
                 },
-            };
-            self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
+            }) catch return DriverError.TX_BUFFER_FULL;
         }
 
         pub fn set_WiFi_event_handler(self: *Self, callback: WIFI_event_type, user_data: ?*anyopaque) void {
@@ -1027,11 +1094,13 @@ pub fn EspAT(comptime driver_config: Config) type {
                 .SERVER_CLIENT => 3,
             };
 
-            var pkg: TXEventPkg = .{};
-            const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d}{s}", .{ prefix, get_cmd_string(.NETWORK_SERVER_CONF), self.div_binds, postfix }) catch unreachable;
-            pkg.cmd_len = cmd_slice.len;
-            pkg.cmd_enum = .NETWORK_SERVER_CONF;
-            self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
+            var pkg: CommandPkg = .{};
+            const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}={d}{s}", .{ prefix, get_cmd_string(.NETWORK_SERVER_CONF), self.div_binds, postfix }) catch unreachable;
+            pkg.len = cmd_slice.len;
+            self.TX_fifo.writeItem(TXEventPkg{
+                .cmd_enum = .NETWORK_SERVER_CONF,
+                .Extra_data = .{ .Command = pkg },
+            }) catch return DriverError.TX_BUFFER_FULL;
 
             self.network_mode = mode;
         }
@@ -1069,18 +1138,19 @@ pub fn EspAT(comptime driver_config: Config) type {
 
         //TODO: add error checking for invalid closed erros
         pub fn close(self: *Self, id: usize) DriverError!void {
-            var pkg: TXEventPkg = .{};
             if (id > self.Network_binds.len) return DriverError.INVALID_BIND;
             if (self.Network_binds[id]) |*bd| {
-                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d}{s}", .{ prefix, get_cmd_string(.NETWORK_CLOSE), id, postfix }) catch unreachable;
-                pkg.cmd_len = cmd_slice.len;
-                pkg.cmd_enum = .NETWORK_CLOSE;
-                pkg.Extra_data = .{
-                    .Socket = .{ .descriptor_id = id, .pkg_type = .{
-                        .NetworkClosePkg = {},
-                    } },
-                };
-                self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
+                self.TX_fifo.writeItem(TXEventPkg{
+                    .cmd_enum = .NETWORK_CLOSE,
+                    .Extra_data = .{
+                        .Socket = .{
+                            .descriptor_id = id,
+                            .pkg_type = .{
+                                .NetworkClosePkg = {},
+                            },
+                        },
+                    },
+                }) catch return DriverError.TX_BUFFER_FULL;
                 bd.to_send += 1;
                 return;
             }
@@ -1098,17 +1168,19 @@ pub fn EspAT(comptime driver_config: Config) type {
             Network.check_connect_config(config) catch return DriverError.INVALID_ARGS;
 
             //set RECV mode for the ID
-            var recv_mode = TXEventPkg{};
-            const cmd_slice = std.fmt.bufPrint(&recv_mode.cmd_data, "{s}{s}={d},{d}{s}", .{
+            var recv_mode = CommandPkg{};
+            const cmd_slice = std.fmt.bufPrint(&recv_mode.str, "{s}{s}={d},{d}{s}", .{
                 prefix,
                 get_cmd_string(.NETWORK_RECV_MODE),
                 id,
                 @intFromEnum(config.recv_mode),
                 postfix,
             }) catch unreachable;
-            recv_mode.cmd_len = cmd_slice.len;
-            recv_mode.cmd_enum = .NETWORK_RECV_MODE;
-            self.TX_fifo.writeItem(recv_mode) catch unreachable;
+            recv_mode.len = cmd_slice.len;
+            self.TX_fifo.writeItem(TXEventPkg{
+                .cmd_enum = .NETWORK_RECV_MODE,
+                .Extra_data = .{ .Command = recv_mode },
+            }) catch unreachable;
 
             //send connect request
             const pkg = TXEventPkg{ .cmd_enum = .NETWORK_CONNECT, .Extra_data = .{
@@ -1124,18 +1196,17 @@ pub fn EspAT(comptime driver_config: Config) type {
         pub fn accept(self: *Self, id: usize) DriverError!void {
             if (id >= self.Network_binds.len) return DriverError.INVALID_ARGS;
             const recv_buffer_size = driver_config.network_recv_size - 50; //50bytes  of pre-data
-            var pkg: TXEventPkg = .{};
-            const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d},{d}{s}", .{
-                prefix,
-                get_cmd_string(Commands.NETWORK_RECV),
-                id,
-                recv_buffer_size,
-                postfix,
-            }) catch unreachable;
-            pkg.cmd_len = cmd_slice.len;
-            pkg.cmd_enum = .NETWORK_RECV;
-            pkg.Extra_data = .{ .Socket = .{ .descriptor_id = id, .pkg_type = .{ .NetworkAcceptPkg = {} } } };
-            self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
+            self.TX_fifo.writeItem(TXEventPkg{
+                .cmd_enum = .NETWORK_RECV,
+                .Extra_data = .{
+                    .Socket = .{
+                        .descriptor_id = id,
+                        .pkg_type = .{
+                            .NetworkAcceptPkg = recv_buffer_size,
+                        },
+                    },
+                },
+            }) catch return DriverError.TX_BUFFER_FULL;
         }
 
         fn accpet_fn(ctx: *anyopaque, id: usize) Network.ClientError!void {
@@ -1150,14 +1221,17 @@ pub fn EspAT(comptime driver_config: Config) type {
             if (free_TX_cmd < 2) return DriverError.BUSY; //keep some space to other commands
 
             if (self.Network_binds[id]) |*bd| {
-                var pkg: TXEventPkg = .{};
-                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d},{d}{s}", .{ prefix, get_cmd_string(.NETWORK_SEND), id, data.len, postfix }) catch unreachable;
-                pkg.cmd_len = cmd_slice.len;
-                pkg.cmd_enum = .NETWORK_SEND;
-                pkg.Extra_data = .{ .Socket = .{ .descriptor_id = id, .pkg_type = .{
-                    .NetworkSendPkg = .{ .data = data },
-                } } };
-                self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
+                self.TX_fifo.writeItem(TXEventPkg{
+                    .cmd_enum = .NETWORK_SEND,
+                    .Extra_data = .{
+                        .Socket = .{
+                            .descriptor_id = id,
+                            .pkg_type = .{
+                                .NetworkSendPkg = .{ .data = data },
+                            },
+                        },
+                    },
+                }) catch return DriverError.TX_BUFFER_FULL;
                 bd.to_send += 1;
                 return;
             }
@@ -1180,23 +1254,17 @@ pub fn EspAT(comptime driver_config: Config) type {
             if (remote_port == 0) return error.INVALID_ARGS;
 
             if (self.Network_binds[id]) |*bd| {
-                var pkg: TXEventPkg = .{};
-                const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d},{d}", .{
-                    prefix,
-                    get_cmd_string(.NETWORK_SEND),
-                    id,
-                    data.len,
-                }) catch unreachable;
-                pkg.cmd_len = cmd_slice.len;
-                pkg.cmd_enum = .NETWORK_SEND;
-                pkg.Extra_data = .{
-                    .Socket = .{
-                        .descriptor_id = id,
-                        .pkg_type = .{
-                            .NetworkSendToPkg = .{
-                                .data = data,
-                                .remote_host = remote_host,
-                                .remote_port = remote_port,
+                const pkg = TXEventPkg{
+                    .cmd_enum = .NETWORK_SEND,
+                    .Extra_data = .{
+                        .Socket = .{
+                            .descriptor_id = id,
+                            .pkg_type = .{
+                                .NetworkSendToPkg = .{
+                                    .data = data,
+                                    .remote_host = remote_host,
+                                    .remote_port = remote_port,
+                                },
                             },
                         },
                     },
@@ -1219,23 +1287,26 @@ pub fn EspAT(comptime driver_config: Config) type {
             const end_bind = self.div_binds;
             var cmd_slice: []const u8 = undefined;
 
-            var pkg: TXEventPkg = .{ .cmd_enum = .NETWORK_RECV_MODE };
+            var pkg: CommandPkg = .{};
 
             if (self.network_mode == .SERVER_ONLY) {
                 if (self.get_tx_free_space() < 3) return DriverError.TX_BUFFER_FULL;
-                cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=5,{d}{s}", .{
+                cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=5,{d}{s}", .{
                     prefix,
                     get_cmd_string(.NETWORK_RECV_MODE),
                     @intFromEnum(config.recv_mode),
                     postfix,
                 }) catch unreachable;
 
-                pkg.cmd_len = cmd_slice.len;
-                self.TX_fifo.writeItem(pkg) catch unreachable;
+                pkg.len = cmd_slice.len;
+                self.TX_fifo.writeItem(TXEventPkg{
+                    .cmd_enum = .NETWORK_RECV_MODE,
+                    .Extra_data = .{ .Command = pkg },
+                }) catch unreachable;
             } else {
                 if (self.get_tx_free_space() < (end_bind + 2)) return DriverError.TX_BUFFER_FULL;
                 for (0..end_bind) |id| {
-                    cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d},{d}{s}", .{
+                    cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}={d},{d}{s}", .{
                         prefix,
                         get_cmd_string(.NETWORK_RECV_MODE),
                         id,
@@ -1243,12 +1314,15 @@ pub fn EspAT(comptime driver_config: Config) type {
                         postfix,
                     }) catch unreachable;
 
-                    pkg.cmd_len = cmd_slice.len;
-                    self.TX_fifo.writeItem(pkg) catch unreachable;
+                    pkg.len = cmd_slice.len;
+                    self.TX_fifo.writeItem(TXEventPkg{
+                        .cmd_enum = .NETWORK_RECV_MODE,
+                        .Extra_data = .{ .Command = pkg },
+                    }) catch unreachable;
                 }
             }
 
-            cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=1,{d}", .{
+            cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=1,{d}", .{
                 prefix,
                 get_cmd_string(.NETWORK_SERVER),
                 config.port,
@@ -1256,37 +1330,41 @@ pub fn EspAT(comptime driver_config: Config) type {
             var slice_len = cmd_slice.len;
             switch (config.server_type) {
                 .Default => {
-                    cmd_slice = std.fmt.bufPrint(pkg.cmd_data[slice_len..], "{s}", .{postfix}) catch unreachable;
+                    cmd_slice = std.fmt.bufPrint(pkg.str[slice_len..], "{s}", .{postfix}) catch unreachable;
                     slice_len += cmd_slice.len;
                 },
 
                 .SSL => {
-                    cmd_slice = std.fmt.bufPrint(pkg.cmd_data[slice_len..], ",\"SSL\"{s}", .{postfix}) catch unreachable;
+                    cmd_slice = std.fmt.bufPrint(pkg.str[slice_len..], ",\"SSL\"{s}", .{postfix}) catch unreachable;
                     slice_len += cmd_slice.len;
                 },
 
                 .TCP => {
-                    cmd_slice = std.fmt.bufPrint(pkg.cmd_data[slice_len..], ",\"TCP\"{s}", .{postfix}) catch unreachable;
+                    cmd_slice = std.fmt.bufPrint(pkg.str[slice_len..], ",\"TCP\"{s}", .{postfix}) catch unreachable;
                     slice_len += cmd_slice.len;
                 },
 
                 else => return DriverError.INVALID_ARGS,
             }
-            pkg.cmd_len = slice_len;
-            pkg.cmd_enum = .NETWORK_SERVER;
-            self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
+            pkg.len = slice_len;
+            self.TX_fifo.writeItem(TXEventPkg{
+                .cmd_enum = .NETWORK_SERVER,
+                .Extra_data = .{ .Command = pkg },
+            }) catch return DriverError.TX_BUFFER_FULL;
 
             if (config.timeout) |timeout| {
                 const time = @min(7200, timeout);
-                cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}={d}{s}", .{
+                cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}={d}{s}", .{
                     prefix,
                     get_cmd_string(.NETWORK_SERVER_TIMEOUT),
                     time,
                     postfix,
                 }) catch unreachable;
-                pkg.cmd_enum = .NETWORK_SERVER_TIMEOUT;
-                pkg.cmd_len = cmd_slice.len;
-                self.TX_fifo.writeItem(pkg) catch unreachable;
+                pkg.len = cmd_slice.len;
+                self.TX_fifo.writeItem(TXEventPkg{
+                    .cmd_enum = .NETWORK_SERVER_TIMEOUT,
+                    .Extra_data = .{ .Command = pkg },
+                }) catch unreachable;
             }
 
             for (0..end_bind) |id| {
@@ -1334,11 +1412,13 @@ pub fn EspAT(comptime driver_config: Config) type {
             }
 
             //send server close server command
-            var pkg: TXEventPkg = .{};
-            const cmd_slice = std.fmt.bufPrint(&pkg.cmd_data, "{s}{s}=0,1{s}", .{ prefix, get_cmd_string(Commands.NETWORK_SERVER), postfix }) catch unreachable;
-            pkg.cmd_len = cmd_slice.len;
-            pkg.cmd_enum = .NETWORK_SERVER;
-            self.TX_fifo.writeItem(pkg) catch DriverError.TX_BUFFER_FULL;
+            var pkg: CommandPkg = .{};
+            const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=0,1{s}", .{ prefix, get_cmd_string(Commands.NETWORK_SERVER), postfix }) catch unreachable;
+            pkg.len = cmd_slice.len;
+            self.TX_fifo.writeItem(TXEventPkg{
+                .cmd_enum = .NETWORK_SERVER,
+                .Extra_data = .{ .Command = pkg },
+            }) catch DriverError.TX_BUFFER_FULL;
         }
 
         //TODO: add more config param

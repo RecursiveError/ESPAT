@@ -12,11 +12,14 @@ __Minimum Espressif AT Firmware Version__: 3.4.0.0
 Boantong AT firmware (AT =< 1.7) is not supported, and Espressif firmware (2.2.0.0) is not compatible with the pin layout of these boards, to use them it is necessary to customize the firmware to ESP8266, if you don't know how to do this follow this guide: [custom pin AT](docs/customAT.md)~~
 
 ## Supported Features
-- [x] WiFi STA/AP/AP+STA modes
-- [x] TCP/UDP Client
-- [x] TCP Server
-- [x] Server + Client mode
-- [x] passive and active recv mode
+- WiFi STA/AP/AP+STA modes
+- WiFi static IP and DHCP config
+- WiFi protocol config
+- Multi conn support
+- TCP/UDP Client
+- TCP Server
+- Server + Client mode
+- passive and active recv mode (for All sockets)
 
 ## Others
 Features that may be implemented
@@ -251,9 +254,10 @@ this function is assigned a ClientCallback and an optional user-defined paramete
 
 if a client socket is available, this function will associate the callback and the user's parameter with that socket and return the ID.
 
-to make a request you must create a configuration struct:`NetworkConnectPkg`
+to make a request you must create a configuration struct:`ConnectConfig`
 
 This struct gets:
+- `recv_mode` = socket data reception mode, `.active`: the module will send all received data immediately, `.passive`: the module will store the received data in an internal buffer until the user requests the data.
 - `remote_host` = a string containing the IP or domain of the host
 - `remote_port` = the host port
 - `config` = Request type configuration:
@@ -271,13 +275,19 @@ To return a socket, use the function: `release(id: usize)`, this function will c
  
 #### Server
 
-To create a server call function: `create_server(port: u16, server_type: NetworkHandlerType, event_callback: ClientCallback, user_data: ?*anyopaque)` passing
-- port = the port that the server will listen on
-- server_type = the type of server, servers can be of 3 types: `.default` (default firmware configuration), `.TCP` and `.SSL`.
+To create a server you must create a configuration struct: `ServerConfig` this struct contains:
+- `recv_mode` = socket data reception mode, `.active`: the module will send all received data immediately, `.passive`: the module will store the received data in an internal buffer until the user requests the data.
+- `port` = the port that the server will listen on
+- `server_type` = the type of server, servers can be of 3 types: `.default` (default firmware configuration), `.TCP` and `.SSL`.
 
 (The ESP-AT does not support creating UDP servers, but it is possible to receive data via UDP by initializing a UDP client where the `local_port` parameter is the port on which the device will listen for UDP packets.)
 
-- event_callback and user_data = a Clientcallback and an optional user parameter, all server connections will share the same callback and parameters.
+- `callback` and user_data = a Clientcallback and an optional user parameter, all server connections will share the same callback and parameters.
+
+- `user_data` = optional user-defined parameter.
+- `timeout` = optional timeout time for server.
+
+After configured, create the server by calling: `create_server(ServerConfig)` and passing the settings
 
 all communication will happen through the event_callback. [Network events](#network-events)
 
@@ -293,6 +303,7 @@ The Struct Client contains all the information needed to manage the connection:
 - `accept()` = makes a request for the data saved in the id buffer, this function always tries to read as much as allowed by the `network_recv_size` setting. 
 - `close()` = function to close the connection
 - `send()` = function to send data. (**Note**: the data should live until it is returned by event: `.SendDataComplete` or  `.SendDataCancel` ).
+- `send_to()` = sends data to a specific host. (UDP only)
 
 ##### Network Event Table
 
@@ -300,7 +311,7 @@ The Struct Client contains all the information needed to manage the connection:
 |-------------|-----------------|------------------|
 |Connected|`Void`|id has started a connection.|
 |Closed|`void`|The id closed a connection.|
-|DataReport|`usize`| The id has data on hold, use `accept()` to receive or `close()` to close and clear the connection.|
+|DataReport|`usize`| The id has data on hold, use `accept()` to receive or `close()` to close and clear the connection. (only in passive mode)|
 |ReadData| `[]const u8`| data read from the buffer.|
 |SendDataComplete| `[]const u8`| data has been sent, wait for response. |
 |SendDataCancel| `[]const u8`| data send has been canceled. |

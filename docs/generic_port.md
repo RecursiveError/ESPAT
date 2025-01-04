@@ -11,8 +11,6 @@ const std = @import("std");
 const wifi_ssid = "SSID";
 const wifi_password = "PASSWORD";
 const html = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<!DOCTYPE html>\r\n<html lang=\"pt-BR\">\r\n<head>\r\n<meta charset=\"UTF-8\">\r\n<title>Hello World</title>\r\n<p>All Your Codebase Are Belong To Us</p>\r\n</head>\r\n<body>\r\n<h1>Hello World</h1>\r\n</body>\r\n</html>\r\n";
-const HTTP_request = "GET /data/2.5/weather?lat={s}&lon={s}&appid={s} HTTP/1.1\r\nHost: api.openweathermap.org\r\nUser-Agent: ESPAT/1.0\r\nAccept: */*\r\n\r\n";
-var API_BUF: std.fifo.LinearFifo(u8, .{ .Static = 4096 }) = std.fifo.LinearFifo(u8, .{ .Static = 4096 }).init();
 
 var rv_internal_buf: [2048]u8 = undefined;
 fn rx_callback(free_size: usize, user_data: ?*anyopaque) []u8 {

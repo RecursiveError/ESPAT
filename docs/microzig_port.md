@@ -31,8 +31,8 @@ pub const microzig_options = .{
     .logFn = rp2040.uart.logFn,
 };
 
-const wifi_ssid = "GUSTAVO";
-const wifi_password = "anjos2018";
+const wifi_ssid = "SSID";
+const wifi_password = "PASSWORD";
 const server_port: u16 = 80;
 
 var rv_internal_buf: [1024]u8 = undefined;

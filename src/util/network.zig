@@ -189,7 +189,7 @@ pub fn check_connect_config(config: ConnectConfig) !void {
         .udp => |args| {
             if (args.local_port == 0) return error.InvalidLocalPort;
             if ((config.recv_mode == .passive) and (args.mode != .Unchanged)) {
-                std.log.warn("UDP Mode 1 and 2 has no effect with passive recv", .{});
+                return error.InvalidUDPMode;
             }
         },
     }

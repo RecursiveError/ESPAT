@@ -14,7 +14,7 @@ pub const SEND_RESPONSE_TOKEN = [_][]const u8{
 };
 
 //TODO: add more events
-pub const NetworkEvent = union(enum) {
+pub const Event = union(enum) {
     Connected: void,
     Closed: void,
     DataReport: usize,
@@ -30,46 +30,46 @@ pub const RecvMode = enum(u1) {
     passive,
 };
 
-pub const NetworkHandlerState = enum {
+pub const HandlerState = enum {
     None,
     Connected,
     Closed,
 };
-pub const NetworkHandlerType = enum {
+pub const HandlerType = enum {
     Default,
     TCP,
     UDP,
     SSL,
 };
 
-pub const NetworkSendPkg = struct {
+pub const SendPkg = struct {
     data: []const u8 = undefined,
 };
 
-pub const NetworkSendToPkg = struct {
+pub const SendToPkg = struct {
     data: []const u8 = undefined,
     remote_host: []const u8,
     remote_port: u16,
 };
 
-pub const NetworkTCPConn = struct {
+pub const TCPConn = struct {
     keep_alive: u16 = 0,
 };
 
-pub const NetworkUDPModes = enum {
+pub const UDPModes = enum {
     Unchanged,
     Change_first,
     Change_all,
 };
 
-pub const NetworkUDPConn = struct {
+pub const UDPConn = struct {
     local_port: u16,
-    mode: NetworkUDPModes = .Unchanged,
+    mode: UDPModes = .Unchanged,
 };
-pub const NetWorkConnectType = union(enum) {
-    tcp: NetworkTCPConn,
-    ssl: NetworkTCPConn,
-    udp: NetworkUDPConn,
+pub const ConnectType = union(enum) {
+    tcp: TCPConn,
+    ssl: TCPConn,
+    udp: UDPConn,
 };
 pub const ConnectConfig = struct {
     recv_mode: RecvMode,
@@ -77,37 +77,37 @@ pub const ConnectConfig = struct {
     remote_port: u16,
     local_ip: ?[]const u8 = null,
     timeout: ?u16 = null,
-    config: NetWorkConnectType,
+    config: ConnectType,
 };
 
 pub const ServerConfig = struct {
     recv_mode: RecvMode,
     callback: ClientCallback,
     user_data: ?*anyopaque,
-    server_type: NetworkHandlerType,
+    server_type: HandlerType,
     port: u16,
     timeout: ?u16 = null,
 };
 
-pub const NetworkPackageType = union(enum) {
-    NetworkSendPkg: NetworkSendPkg,
-    NetworkSendToPkg: NetworkSendToPkg,
-    NetworkAcceptPkg: usize,
-    NetworkClosePkg: void,
+pub const PackageType = union(enum) {
+    SendPkg: SendPkg,
+    SendToPkg: SendToPkg,
+    AcceptPkg: usize,
+    ClosePkg: void,
     ConnectConfig: ConnectConfig,
 };
 
-pub const NetworkSendEvent = enum {
+pub const SendEvent = enum {
     ok,
     fail,
 };
 
-const SendMap = std.StaticStringMap(NetworkSendEvent).initComptime(.{
-    .{ "OK", NetworkSendEvent.ok },
-    .{ "FAIL", NetworkSendEvent.fail },
+const SendMap = std.StaticStringMap(SendEvent).initComptime(.{
+    .{ "OK", SendEvent.ok },
+    .{ "FAIL", SendEvent.fail },
 });
 
-pub fn get_send_event(str: []const u8) !NetworkSendEvent {
+pub fn get_send_event(str: []const u8) !SendEvent {
     const event = SendMap.get(str);
     if (event) |data| {
         return data;
@@ -115,7 +115,7 @@ pub fn get_send_event(str: []const u8) !NetworkSendEvent {
     return error.EventNotFound;
 }
 
-pub fn set_tcp_config(out_buffer: []u8, id: usize, args: ConnectConfig, tcp_conf: NetworkTCPConn) ![]u8 {
+pub fn set_tcp_config(out_buffer: []u8, id: usize, args: ConnectConfig, tcp_conf: TCPConn) ![]u8 {
     var cmd_slice: []const u8 = undefined;
     var cmd_size: usize = 0;
     cmd_slice = try std.fmt.bufPrint(out_buffer, "{s}{s}={d},\"TCP\",\"{s}\",{d},{d}", .{
@@ -147,7 +147,7 @@ pub fn set_tcp_config(out_buffer: []u8, id: usize, args: ConnectConfig, tcp_conf
     return out_buffer[0..cmd_size];
 }
 
-pub fn set_udp_config(out_buffer: []u8, id: usize, args: ConnectConfig, udp_conf: NetworkUDPConn) ![]u8 {
+pub fn set_udp_config(out_buffer: []u8, id: usize, args: ConnectConfig, udp_conf: UDPConn) ![]u8 {
     var cmd_slice: []const u8 = undefined;
     var cmd_size: usize = 0;
     cmd_slice = try std.fmt.bufPrint(out_buffer, "{s}{s}={d},\"UDP\",\"{s}\",{d},{d},{d}", .{
@@ -312,7 +312,7 @@ pub const ClientError = error{
 pub const Client = struct {
     id: usize,
     driver: *anyopaque,
-    event: NetworkEvent,
+    event: Event,
     remote_host: ?[]const u8 = null,
     remote_port: ?u16 = null,
 
@@ -338,13 +338,13 @@ pub const Client = struct {
 };
 
 pub const ClientCallback = *const fn (client: Client, user_data: ?*anyopaque) void;
-pub const NetworkHandler = struct {
-    state: NetworkHandlerState = .None,
+pub const Handler = struct {
+    state: HandlerState = .None,
     to_send: usize = 0,
     event_callback: ?ClientCallback = null,
     client: Client,
     user_data: ?*anyopaque = null,
-    pub fn notify(self: *const NetworkHandler) void {
+    pub fn notify(self: *const Handler) void {
         if (self.event_callback) |callback| {
             callback(self.client, self.user_data);
         }

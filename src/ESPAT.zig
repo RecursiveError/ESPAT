@@ -12,21 +12,21 @@ pub const CommandErrorCodes = Commands_util.CommandsErrorCode;
 pub const ReponseEvent = Commands_util.ResponseEvent;
 
 const WiFi = @import("util/WiFi.zig");
-pub const WiFiAPConfig = WiFi.WiFiAPConfig;
-pub const WiFiSTAConfig = WiFi.WiFiSTAConfig;
-pub const WifiEvent = WiFi.WifiEvent;
-pub const WiFiEncryption = WiFi.WiFiEncryption;
+pub const WiFiAPConfig = WiFi.APConfig;
+pub const WiFiSTAConfig = WiFi.STAConfig;
+pub const WifiEvent = WiFi.Event;
+pub const WiFiEncryption = WiFi.Encryption;
 
 const Network = @import("util/network.zig");
-pub const NetworkPackageType = Network.NetworkPackageType;
-pub const NetworkEvent = Network.NetworkEvent;
-pub const NetworkHandlerState = Network.NetworkHandlerState;
+pub const NetworkPackageType = Network.PackageType;
+pub const NetworkEvent = Network.Event;
+pub const NetworkHandlerState = Network.HandlerState;
 pub const ConnectConfig = Network.ConnectConfig;
 pub const ServerConfig = Network.ServerConfig;
-pub const NetworkTCPConn = Network.NetworkTCPConn;
-pub const NetworkUDPConn = Network.NetworkUDPConn;
-pub const NetworkHandlerType = Network.NetworkHandlerType;
-pub const NetworkHandler = Network.NetworkHandler;
+pub const NetworkTCPConn = Network.TCPConn;
+pub const NetworkUDPConn = Network.UDPConn;
+pub const NetworkHandlerType = Network.HandlerType;
+pub const NetworkHandler = Network.Handler;
 pub const Client = Network.Client;
 pub const ClientCallback = Network.ClientCallback;
 
@@ -469,7 +469,7 @@ pub fn EspAT(comptime driver_config: Config) type {
                                 const id = net_pkg.descriptor_id;
                                 if (id == index) {
                                     switch (net_pkg.pkg_type) {
-                                        .NetworkSendPkg => |to_clear| {
+                                        .SendPkg => |to_clear| {
                                             bd.client.event = .{ .SendDataCancel = to_clear.data };
                                             bd.notify();
                                         },
@@ -567,7 +567,7 @@ pub fn EspAT(comptime driver_config: Config) type {
             self.TX_callback_handler(config, self.TX_RX_user_data);
         }
 
-        fn apply_udp_send(self: *Self, id: usize, data: Network.NetworkSendToPkg) void {
+        fn apply_udp_send(self: *Self, id: usize, data: Network.SendToPkg) void {
             const cmd = std.fmt.bufPrint(&self.internal_aux_buffer, "{s}{s}={d},{d},\"{s}\",{d}{s}", .{
                 prefix,
                 get_cmd_string(.NETWORK_SEND),
@@ -632,7 +632,7 @@ pub fn EspAT(comptime driver_config: Config) type {
         fn handler_socket_TX(self: *Self, data: NetworkPackage) void {
             const id = data.descriptor_id;
             switch (data.pkg_type) {
-                .NetworkSendPkg => |to_send| {
+                .SendPkg => |to_send| {
                     self.apply_send(id, to_send.data.len);
                     self.Network_corrent_pkg = NetworkToSend{
                         .data = to_send.data,
@@ -640,7 +640,7 @@ pub fn EspAT(comptime driver_config: Config) type {
                     };
                     self.busy_flag.Socket = true;
                 },
-                .NetworkSendToPkg => |to_send| {
+                .SendToPkg => |to_send| {
                     self.apply_udp_send(id, to_send);
                     self.Network_corrent_pkg = NetworkToSend{
                         .data = to_send.data,
@@ -648,12 +648,12 @@ pub fn EspAT(comptime driver_config: Config) type {
                     };
                     self.busy_flag.Socket = true;
                 },
-                .NetworkAcceptPkg => |size| {
+                .AcceptPkg => |size| {
                     self.long_data.id = id;
                     self.apply_accept(id, size);
                     self.busy_flag.Command = true;
                 },
-                .NetworkClosePkg => {
+                .ClosePkg => {
                     self.apply_close(id);
                     self.busy_flag.Command = true;
                     if (self.Network_binds[id]) |*bd| {
@@ -1163,7 +1163,7 @@ pub fn EspAT(comptime driver_config: Config) type {
                         .Socket = .{
                             .descriptor_id = id,
                             .pkg_type = .{
-                                .NetworkClosePkg = {},
+                                .ClosePkg = {},
                             },
                         },
                     },
@@ -1219,7 +1219,7 @@ pub fn EspAT(comptime driver_config: Config) type {
                     .Socket = .{
                         .descriptor_id = id,
                         .pkg_type = .{
-                            .NetworkAcceptPkg = recv_buffer_size,
+                            .AcceptPkg = recv_buffer_size,
                         },
                     },
                 },
@@ -1244,7 +1244,7 @@ pub fn EspAT(comptime driver_config: Config) type {
                         .Socket = .{
                             .descriptor_id = id,
                             .pkg_type = .{
-                                .NetworkSendPkg = .{ .data = data },
+                                .SendPkg = .{ .data = data },
                             },
                         },
                     },
@@ -1277,7 +1277,7 @@ pub fn EspAT(comptime driver_config: Config) type {
                         .Socket = .{
                             .descriptor_id = id,
                             .pkg_type = .{
-                                .NetworkSendToPkg = .{
+                                .SendToPkg = .{
                                     .data = data,
                                     .remote_host = remote_host,
                                     .remote_port = remote_port,
@@ -1386,7 +1386,7 @@ pub fn EspAT(comptime driver_config: Config) type {
 
             for (0..end_bind) |id| {
                 try self.release(id);
-                self.Network_binds[id] = Network.NetworkHandler{
+                self.Network_binds[id] = Network.Handler{
                     .event_callback = config.callback,
                     .user_data = config.user_data,
                     .client = self.create_client(id),
@@ -1406,7 +1406,7 @@ pub fn EspAT(comptime driver_config: Config) type {
                         .Socket => |net_data| {
                             if (id == net_data.descriptor_id) {
                                 switch (net_data.pkg_type) {
-                                    .NetworkSendPkg => |to_clear| {
+                                    .SendPkg => |to_clear| {
                                         bd.client.event = .{ .SendDataCancel = to_clear.data };
                                         bd.notify();
                                     },

@@ -13,7 +13,7 @@ pub const WiFiErrors = error{
     invalidTimeout,
 };
 
-pub const WiFiEncryption = enum {
+pub const Encryption = enum {
     OPEN,
     WPA_PSK,
     WPA2_PSK,
@@ -36,7 +36,7 @@ pub const DHCPConfig = struct {
     end_ip: []const u8,
 };
 
-pub const WiFiProtocol = packed struct(u4) {
+pub const Protocol = packed struct(u4) {
     @"802.11b": u1 = 0,
     @"802.11g": u1 = 0,
     @"802.11n": u1 = 0,
@@ -48,7 +48,7 @@ pub const DHCPEnable = packed struct(u2) {
     AP: u1 = 1,
 };
 
-pub const WiFiDHCPMode = packed struct(u3) {};
+pub const DHCPMode = packed struct(u3) {};
 
 pub const STApkg = struct {
     ssid: []const u8,
@@ -61,7 +61,7 @@ pub const STApkg = struct {
     jap_timeout: u32,
     pmf: u1,
 
-    pub fn from_config(config: WiFiSTAConfig) STApkg {
+    pub fn from_config(config: STAConfig) STApkg {
         return STApkg{
             .ssid = config.ssid,
             .pwd = config.pwd,
@@ -76,7 +76,7 @@ pub const STApkg = struct {
     }
 };
 
-pub const WiFiSTAConfig = struct {
+pub const STAConfig = struct {
     ssid: []const u8,
     pwd: ?[]const u8 = null,
     bssid: ?[]const u8 = null,
@@ -87,7 +87,7 @@ pub const WiFiSTAConfig = struct {
     jap_timeout: u32 = 15,
     pmf: u1 = 0, //pmf disable
 
-    wifi_protocol: ?WiFiProtocol = null,
+    wifi_protocol: ?Protocol = null,
     mac: ?[]const u8 = null,
     wifi_ip: ?WiFiIp = null,
 };
@@ -96,11 +96,11 @@ pub const APpkg = struct {
     ssid: []const u8,
     pwd: ?[]const u8,
     channel: u8,
-    ecn: WiFiEncryption,
+    ecn: Encryption,
     max_conn: u4,
     hidden_ssid: u1,
 
-    pub fn from_config(config: WiFiAPConfig) APpkg {
+    pub fn from_config(config: APConfig) APpkg {
         return APpkg{
             .ssid = config.ssid,
             .pwd = config.pwd,
@@ -112,15 +112,15 @@ pub const APpkg = struct {
     }
 };
 
-pub const WiFiAPConfig = struct {
+pub const APConfig = struct {
     ssid: []const u8,
     pwd: ?[]const u8 = null,
     channel: u8,
-    ecn: WiFiEncryption,
+    ecn: Encryption,
     max_conn: u4 = 10,
     hidden_ssid: u1 = 0,
 
-    wifi_protocol: ?WiFiProtocol = null,
+    wifi_protocol: ?Protocol = null,
     mac: ?[]const u8 = null,
     wifi_ip: ?WiFiIp = null,
     dhcp_config: ?DHCPConfig = null,
@@ -139,7 +139,7 @@ pub const DeviceInfo = struct {
     ip: []const u8,
 };
 
-pub const WiFiBaseEvent = enum {
+pub const BaseEvent = enum {
     AP_CON_START,
     AP_CONNECTED,
     AP_GOT_MASK,
@@ -153,7 +153,7 @@ pub const WiFiBaseEvent = enum {
     ERROR,
 };
 
-pub const WifiEvent = union(enum) {
+pub const Event = union(enum) {
     //Events received from the access point (when in station mode)
     AP_CON_START: void,
     AP_CONNECTED: void,
@@ -169,16 +169,16 @@ pub const WifiEvent = union(enum) {
     ERROR: EventError,
 };
 
-const RESPOSE_TOKEN = std.StaticStringMap(WiFiBaseEvent).initComptime(.{
-    .{ "DISCONNECT", WiFiBaseEvent.AP_DISCONNECTED },
-    .{ "CONNECTED", WiFiBaseEvent.AP_CON_START },
-    .{ "GOT IP", WiFiBaseEvent.AP_CONNECTED },
-    .{ "ip", WiFiBaseEvent.AP_GOT_IP },
-    .{ "gateway", WiFiBaseEvent.AP_GOT_GATEWAY },
-    .{ "netmask", WiFiBaseEvent.AP_GOT_MASK },
+const RESPOSE_TOKEN = std.StaticStringMap(BaseEvent).initComptime(.{
+    .{ "DISCONNECT", BaseEvent.AP_DISCONNECTED },
+    .{ "CONNECTED", BaseEvent.AP_CON_START },
+    .{ "GOT IP", BaseEvent.AP_CONNECTED },
+    .{ "ip", BaseEvent.AP_GOT_IP },
+    .{ "gateway", BaseEvent.AP_GOT_GATEWAY },
+    .{ "netmask", BaseEvent.AP_GOT_MASK },
 });
 
-pub fn get_base_event(event_str: []const u8) !WiFiBaseEvent {
+pub fn get_base_event(event_str: []const u8) !BaseEvent {
     const event = RESPOSE_TOKEN.get(event_str);
     if (event) |data| {
         return data;
@@ -193,7 +193,7 @@ pub fn get_error_event(event_str: []const u8) EventError {
 }
 
 //https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/wifi.html#wi-fi-protocol-mode
-pub fn check_protocol(proto: WiFiProtocol) !void {
+pub fn check_protocol(proto: Protocol) !void {
     const value: u4 = @bitCast(proto);
 
     //check for BG
@@ -240,7 +240,7 @@ fn check_DHCP_config(dhcp: DHCPConfig) !void {
 }
 
 //TODO create a real IP and mac verify
-pub fn check_STA_config(config: WiFiSTAConfig) !usize {
+pub fn check_STA_config(config: STAConfig) !usize {
     var pkgs: usize = 1;
     const ssid_len = config.ssid.len;
     if ((ssid_len < 1) or (ssid_len > 32)) return WiFiErrors.invalidSSID;
@@ -280,7 +280,7 @@ pub fn check_STA_config(config: WiFiSTAConfig) !usize {
 }
 
 //TODO create a real IP and mac verify
-pub fn check_AP_config(config: WiFiAPConfig) !usize {
+pub fn check_AP_config(config: APConfig) !usize {
     var pkgs: usize = 1;
     const ssid_len = config.ssid.len;
     if ((ssid_len < 1) or (ssid_len > 32)) return WiFiErrors.invalidSSID;

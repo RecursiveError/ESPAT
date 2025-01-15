@@ -14,15 +14,23 @@ pub const SEND_RESPONSE_TOKEN = [_][]const u8{
 };
 
 //TODO: add more events
+
+pub const SendState = enum {
+    Ok,
+    Fail,
+    cancel,
+};
+
+pub const SendResult = struct {
+    state: SendState,
+    data: []const u8 = undefined,
+};
 pub const Event = union(enum) {
     Connected: void,
     Closed: void,
     DataReport: usize,
     ReadData: []const u8,
-    SendDataComplete: []const u8,
-    SendDataCancel: []const u8,
-    SendDataOk: void,
-    SendDataFail: void,
+    SendData: SendResult,
 };
 
 pub const RecvMode = enum(u1) {

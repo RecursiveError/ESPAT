@@ -149,8 +149,8 @@ const Device = struct {
     apply_cmd: *const fn (TXEventPkg, []u8, *anyopaque) []const u8 = undefined,
     pool_data: *const fn (*anyopaque) []const u8,
     check_cmd: *const fn ([]const u8, []const u8, *anyopaque) DriverError!void,
-    ok_handler: *const fn (*anyopaque) void = undefined,
-    err_handler: *const fn (*anyopaque) void = undefined,
+    ok_handler: *const fn (*anyopaque) void,
+    err_handler: *const fn (*anyopaque) void,
 };
 
 pub const TX_callback = *const fn (data: []const u8, user_data: ?*anyopaque) void;
@@ -311,10 +311,9 @@ pub fn EspAT(comptime driver_config: Config) type {
                     callback(.{ .Ok = {} }, resp, self.Error_handler_user_data);
                 }
             }
-            //if (self.last_device) |dev| {
-            //dev.ok_handler();
-            //}
-            //self.last_device = null;
+            if (self.last_device) |dev| {
+                dev.ok_handler();
+            }
             self.TX_wait_response = null;
         }
 
@@ -326,10 +325,9 @@ pub fn EspAT(comptime driver_config: Config) type {
                     callback(.{ .Error = self.last_error_code }, resp, self.Error_handler_user_data);
                 }
             }
-            //if (self.last_device) |dev| {
-            //    dev.err_handler();
-            //}
-            //self.last_device = null;
+            if (self.last_device) |dev| {
+                dev.err_handler();
+            }
             self.last_error_code = .ESP_AT_UNKNOWN_ERROR; //reset error code handler
             self.TX_wait_response = null;
         }
@@ -967,6 +965,28 @@ pub fn NetworkDevice(binds: usize) type {
             }
         }
 
+        fn ok_handler(_: *anyopaque) void {
+            return;
+        }
+
+        //send command is the only command that need to be check for Ok and Error response
+        fn err_handler(device_inst: *anyopaque) void {
+            var self: *Self = @alignCast(@ptrCast(device_inst));
+            //Network_corrent_pkg is only set if a send command is the next to be send
+            if (self.Network_corrent_pkg) |pkg| {
+                const id = pkg.id;
+                if (self.Network_binds[id]) |*bd| {
+                    bd.client.event = .{
+                        .SendData = .{
+                            .state = .cancel,
+                            .data = pkg.data,
+                        },
+                    };
+                }
+            }
+            self.Network_corrent_pkg = null;
+        }
+
         fn apply_cmd(pkg: TXEventPkg, input_buffer: []u8, device_inst: *anyopaque) []const u8 {
             var self: *Self = @alignCast(@ptrCast(device_inst));
             const runner_inst = self.runner_loop.runner_instance;
@@ -1174,6 +1194,7 @@ pub fn NetworkDevice(binds: usize) type {
                     bd.notify();
                 }
             }
+            self.Network_corrent_pkg = null;
         }
 
         fn parse_network_data(self: *Self, aux_buffer: []const u8) DriverError!void {

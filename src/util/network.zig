@@ -358,3 +358,8 @@ pub const Handler = struct {
         }
     }
 };
+
+pub const Package = struct {
+    descriptor_id: usize = 255,
+    pkg_type: PackageType,
+};

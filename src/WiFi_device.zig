@@ -4,7 +4,7 @@ const Types = @import("Types.zig");
 const Device = Types.Device;
 const Runner = Types.Runner;
 const ToRead = Types.ToRead;
-const TXEventPkg = Types.TXEventPkg;
+const TXPkg = Types.TXPkg;
 const DriverError = Types.DriverError;
 
 const Commands_util = @import("util/commands.zig");
@@ -16,6 +16,7 @@ const prefix = Commands_util.prefix;
 const postfix = Commands_util.postfix;
 
 const WiFi = @import("util/WiFi.zig");
+pub const Package = WiFi.Package;
 pub const APConfig = WiFi.APConfig;
 pub const STAConfig = WiFi.STAConfig;
 pub const Event = WiFi.Event;
@@ -57,7 +58,7 @@ pub const WiFiDevice = struct {
     //callback handlers
     WiFi_user_data: ?*anyopaque = null,
     on_WiFi_event: WIFICallbackType = null,
-    STAFlag: bool = false,
+    STAFlag: bool,
 
     //Device functions
 
@@ -74,13 +75,15 @@ pub const WiFiDevice = struct {
         }
     }
 
-    fn apply_cmd(pkg: TXEventPkg, input_buffer: []u8, device_inst: *anyopaque) []const u8 {
+    fn apply_cmd(pkg: TXPkg, input_buffer: []u8, device_inst: *anyopaque) []const u8 {
         var self: *WiFiDevice = @alignCast(@ptrCast(device_inst));
         const runner_inst = self.runner_loop.runner_instance;
 
-        switch (pkg.Extra_data) {
-            .WiFi => |data| {
-                switch (data) {
+        const data: *const Package = @alignCast(@ptrCast(std.mem.bytesAsValue(Package, &pkg.buffer)));
+
+        switch (pkg.device) {
+            .WiFi => {
+                switch (data.*) {
                     .AP_conf_pkg => |wpkg| {
                         return WiFi_apply_AP_config(wpkg, input_buffer);
                     },
@@ -89,11 +92,11 @@ pub const WiFiDevice = struct {
                         self.STAFlag = true;
                         return WiFi_apply_STA_config(wpkg, input_buffer);
                     },
-                    .MAC_config => |wpkg| {
-                        return apply_WiFi_mac(pkg.cmd_enum, wpkg, input_buffer);
-                    },
                     .static_ap_config => |wpkg| {
-                        return apply_static_ip(pkg.cmd_enum, wpkg, input_buffer);
+                        return apply_static_ip(.WIFI_AP_IP, wpkg, input_buffer);
+                    },
+                    .static_sta_config => |wpkg| {
+                        return apply_static_ip(.WIFI_STA_IP, wpkg, input_buffer);
                     },
                     .dhcp_config => |wpkg| {
                         return apply_DHCP_config(wpkg, input_buffer);
@@ -135,10 +138,7 @@ pub const WiFiDevice = struct {
     fn response_handler(device_inst: *anyopaque) void {
         var self: *WiFiDevice = @alignCast(@ptrCast(device_inst));
         const runner_inst = self.runner_loop.runner_instance;
-        if (self.STAFlag) {
-            self.runner_loop.set_busy_flag(0, runner_inst);
-            self.STAFlag = false;
-        }
+        self.runner_loop.set_busy_flag(0, runner_inst);
     }
 
     fn wifi_response(self: *WiFiDevice, aux_buffer: []const u8) DriverError!void {
@@ -156,10 +156,7 @@ pub const WiFiDevice = struct {
             var pkg: Commands_util.Package = .{};
             const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}?{s}", .{ prefix, get_cmd_string(.WIFI_STA_IP), postfix }) catch unreachable;
             pkg.len = cmd_slice.len;
-            self.runner_loop.store_tx_data(TXEventPkg{
-                .cmd_enum = .WIFI_STA_IP,
-                .Extra_data = .{ .Command = pkg },
-            }, inst) catch return DriverError.TX_BUFFER_FULL;
+            try self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), inst);
         }
         if (self.on_WiFi_event) |callback| {
             callback(event, self.WiFi_user_data);
@@ -244,19 +241,18 @@ pub const WiFiDevice = struct {
                 postfix,
             }) catch unreachable;
             pkg.len = cmd_slice.len;
-            self.runner_loop.store_tx_data(TXEventPkg{
-                .cmd_enum = .WIFI_STA_PROTO,
-                .Extra_data = .{ .Command = pkg },
-            }, inst) catch unreachable;
+            self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), inst) catch unreachable;
         }
 
         if (config.mac) |mac| {
-            self.runner_loop.store_tx_data(TXEventPkg{
-                .cmd_enum = .WIFI_STA_MAC,
-                .Extra_data = .{
-                    .WiFi = .{ .MAC_config = mac },
-                },
-            }, inst) catch unreachable;
+            const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=\"{s}\"{s}", .{
+                prefix,
+                get_cmd_string(.WIFI_STA_MAC),
+                mac,
+                postfix,
+            }) catch unreachable;
+            pkg.len = cmd_slice.len;
+            self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), inst) catch unreachable;
         }
 
         if (config.wifi_ip) |ip_mode| {
@@ -270,30 +266,19 @@ pub const WiFiDevice = struct {
                         postfix,
                     }) catch unreachable;
                     pkg.len = cmd_slice.len;
-                    self.runner_loop.store_tx_data(TXEventPkg{
-                        .cmd_enum = .WiFi_SET_DHCP,
-                        .Extra_data = .{ .Command = pkg },
-                    }, inst) catch unreachable;
+                    self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), inst) catch unreachable;
                 },
                 .static => |static_ip| {
                     self.WiFi_dhcp.STA = 0;
-                    self.runner_loop.store_tx_data(TXEventPkg{
-                        .cmd_enum = .WIFI_STA_IP,
-                        .Extra_data = .{
-                            .WiFi = .{
-                                .static_ap_config = static_ip,
-                            },
-                        },
-                    }, inst) catch unreachable;
+                    const wpkg = Package{ .static_sta_config = static_ip };
+                    self.runner_loop.store_tx_data(TXPkg.convert_type(.WiFi, wpkg), inst) catch unreachable;
                 },
             }
         }
 
-        self.runner_loop.store_tx_data(TXEventPkg{ .cmd_enum = .WIFI_CONNECT, .Extra_data = .{
-            .WiFi = .{
-                .STA_conf_pkg = WiFi.STApkg.from_config(config),
-            },
-        } }, inst) catch unreachable;
+        const wpkg = Package{ .STA_conf_pkg = WiFi.STApkg.from_config(config) };
+
+        self.runner_loop.store_tx_data(TXPkg.convert_type(.WiFi, wpkg), inst) catch unreachable;
     }
 
     pub fn WiFi_config_AP(self: *WiFiDevice, config: APConfig) !void {
@@ -319,21 +304,18 @@ pub const WiFiDevice = struct {
                 postfix,
             }) catch unreachable;
             pkg.len = cmd_slice.len;
-            self.runner_loop.store_tx_data(TXEventPkg{
-                .cmd_enum = .WIFI_AP_PROTO,
-                .Extra_data = .{ .Command = pkg },
-            }, inst) catch unreachable;
+            self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), inst) catch unreachable;
         }
 
         if (config.mac) |mac| {
-            self.runner_loop.store_tx_data(TXEventPkg{
-                .cmd_enum = .WIFI_AP_MAC,
-                .Extra_data = .{
-                    .WiFi = .{
-                        .MAC_config = mac,
-                    },
-                },
-            }, inst) catch unreachable;
+            const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=\"{s}\"{s}", .{
+                prefix,
+                get_cmd_string(.WIFI_AP_MAC),
+                mac,
+                postfix,
+            }) catch unreachable;
+            pkg.len = cmd_slice.len;
+            self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), inst) catch unreachable;
         }
 
         if (config.wifi_ip) |ip_mode| {
@@ -347,43 +329,23 @@ pub const WiFiDevice = struct {
                         postfix,
                     }) catch unreachable;
                     pkg.len = cmd_slice.len;
-                    self.runner_loop.store_tx_data(TXEventPkg{
-                        .cmd_enum = .WiFi_SET_DHCP,
-                        .Extra_data = .{ .Command = pkg },
-                    }, inst) catch unreachable;
+                    self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), inst) catch unreachable;
                 },
                 .static => |static_ip| {
                     self.WiFi_dhcp.AP = 0;
-                    const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=", .{
-                        prefix,
-                        get_cmd_string(.WIFI_AP_IP),
-                    }) catch unreachable;
-                    pkg.len = cmd_slice.len;
-                    self.runner_loop.store_tx_data(TXEventPkg{
-                        .cmd_enum = .WIFI_AP_IP,
-                        .Extra_data = .{
-                            .WiFi = .{
-                                .static_ap_config = static_ip,
-                            },
-                        },
-                    }, inst) catch unreachable;
+                    const wpkg = Package{ .static_ap_config = static_ip };
+                    self.runner_loop.store_tx_data(TXPkg.convert_type(.WiFi, wpkg), inst) catch unreachable;
                 },
             }
         }
 
         if (config.dhcp_config) |dhcp| {
-            self.runner_loop.store_tx_data(TXEventPkg{ .cmd_enum = .WiFi_CONF_DHCP, .Extra_data = .{
-                .WiFi = .{
-                    .dhcp_config = dhcp,
-                },
-            } }, inst) catch unreachable;
+            const wpkg = Package{ .dhcp_config = dhcp };
+            self.runner_loop.store_tx_data(TXPkg.convert_type(.WiFi, wpkg), inst) catch unreachable;
         }
 
-        self.runner_loop.store_tx_data(TXEventPkg{ .cmd_enum = .WIFI_CONF, .Extra_data = .{
-            .WiFi = .{
-                .AP_conf_pkg = WiFi.APpkg.from_config(config),
-            },
-        } }, inst) catch unreachable;
+        const wpkg = Package{ .AP_conf_pkg = WiFi.APpkg.from_config(config) };
+        self.runner_loop.store_tx_data(TXPkg.convert_type(.WiFi, wpkg), inst) catch unreachable;
     }
 
     pub fn set_WiFi_mode(self: *WiFiDevice, mode: DriverMode) !void {
@@ -392,11 +354,8 @@ pub const WiFiDevice = struct {
         var pkg: Commands_util.Package = .{};
         const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}={d}{s}", .{ prefix, get_cmd_string(.WIFI_SET_MODE), @intFromEnum(mode), postfix }) catch unreachable;
         pkg.len = cmd_slice.len;
-        self.runner_loop.store_tx_data(TXEventPkg{
-            .cmd_enum = .WIFI_SET_MODE,
-            .Extra_data = .{ .Command = pkg },
-        }, inst) catch return DriverError.TX_BUFFER_FULL;
         self.Wifi_mode = mode;
+        try self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), inst);
     }
 
     pub fn WiFi_disconnect(self: *WiFiDevice) DriverError!void {
@@ -409,22 +368,20 @@ pub const WiFiDevice = struct {
             postfix,
         }) catch unreachable;
         pkg.len = cmd_slice.len;
-        self.runner_loop.store_tx_data(TXEventPkg{
-            .cmd_enum = .WIFI_DISCONNECT,
-            .Extra_data = .{ .Command = pkg },
-        }, inst) catch return DriverError.TX_BUFFER_FULL;
+        try self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), inst);
     }
 
     pub fn WiFi_disconnect_device(self: *WiFiDevice, mac: []const u8) DriverError!void {
         const inst = self.runner_loop.runner_instance;
-        self.runner_loop.store_tx_data(TXEventPkg{
-            .cmd_enum = .WIFI_DISCONNECT_DEVICE,
-            .Extra_data = .{
-                .WiFi = .{
-                    .MAC_config = mac,
-                },
-            },
-        }, inst) catch return DriverError.TX_BUFFER_FULL;
+        var pkg: Commands_util.Package = .{};
+        const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=\"{s}\"{s}", .{
+            prefix,
+            get_cmd_string(.WIFI_DISCONNECT_DEVICE),
+            mac,
+            postfix,
+        }) catch unreachable;
+        pkg.len = cmd_slice.len;
+        try self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), inst);
     }
 
     pub fn set_WiFi_event_handler(self: *WiFiDevice, callback: WIFICallbackType, user_data: ?*anyopaque) void {
@@ -466,6 +423,6 @@ pub const WiFiDevice = struct {
     }
 
     pub fn init() WiFiDevice {
-        return WiFiDevice{};
+        return WiFiDevice{ .STAFlag = false };
     }
 };

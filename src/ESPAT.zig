@@ -59,9 +59,7 @@ pub const Types = struct {
     const TypesRoot = @import("Types.zig");
     pub const DriverError = TypesRoot.DriverError;
 
-    pub const TXExtraData = TypesRoot.TXExtraData;
-
-    pub const TXEventPkg = TypesRoot.TXEventPkg;
+    pub const TXEPkg = TypesRoot.TXPkg;
 
     pub const ToRead = TypesRoot.ToRead;
 

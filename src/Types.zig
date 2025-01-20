@@ -1,6 +1,4 @@
-const Commands_util = @import("util/commands.zig");
-const WiFi = @import("util/WiFi.zig");
-const Network = @import("util/network.zig");
+const std = @import("std");
 
 pub const DriverError = error{
     DRIVER_OFF,
@@ -20,7 +18,7 @@ pub const DriverError = error{
     AUX_BUFFER_FULL,
     NETWORK_BUFFER_EMPTY,
     INVALID_RESPONSE,
-    ALLOC_FAIL,
+    NO_DEVICE,
     MAX_BIND,
     INVALID_BIND,
     INVALID_NETWORK_TYPE,
@@ -29,22 +27,45 @@ pub const DriverError = error{
     UNKNOWN_ERROR,
 };
 
-pub const BluetoothPackage = struct {
-    //TODO
+pub const Devices = enum {
+    Basic,
+    WiFi,
+    Bluethooth,
+    BluethoothLE,
+    TCP_IP,
+    HTTP,
+    MQTT,
+    Filesystem,
+    WebSocket,
+    Ethernet,
+    WebServer,
+    Driver,
+    User,
+    //extra devices
+    Command,
+    Custom,
 };
 
-pub const TXExtraData = union(enum) {
-    Reset: void,
-    Command: Commands_util.Package,
-    Socket: Network.Package,
-    WiFi: WiFi.Package,
-    Bluetooth: BluetoothPackage,
+pub const TXPkg = struct {
+    device: Devices,
+    buffer: [80]u8,
+
+    pub fn init(dev: Devices, data: []const u8) TXPkg {
+        var buf: [80]u8 = undefined;
+        std.mem.copyForwards(u8, &buf, data);
+        return TXPkg{ .device = dev, .buffer = buf };
+    }
+
+    pub fn convert_type(dev: Devices, t: anytype) TXPkg {
+        if (@sizeOf(@TypeOf(t)) > @sizeOf(TXPkg)) {
+            @compileError(std.fmt.comptimePrint("Type {s} cannot fit in TxPkg", .{@typeName(@TypeOf(t))}));
+        }
+        const data = std.mem.asBytes(&t);
+        return init(dev, data);
+    }
 };
 
-pub const TXEventPkg = struct {
-    cmd_enum: Commands_util.Commands,
-    Extra_data: TXExtraData,
-};
+pub const ApplyCallbackType = *const fn (TXPkg, []u8, *anyopaque) ?[]const u8;
 
 pub const ToRead = struct {
     to_read: usize,
@@ -58,15 +79,15 @@ pub const Runner = struct {
     runner_instance: *anyopaque,
     set_busy_flag: *const fn (u1, *anyopaque) void,
     set_long_data: *const fn (ToRead, *anyopaque) void,
-    get_tx_data: *const fn (*anyopaque) ?TXEventPkg,
+    get_tx_data: *const fn (*anyopaque) ?TXPkg,
     get_tx_free_space: *const fn (*anyopaque) usize,
     get_tx_len: *const fn (*anyopaque) usize,
-    store_tx_data: *const fn (TXEventPkg, *anyopaque) DriverError!void,
+    store_tx_data: *const fn (TXPkg, *anyopaque) DriverError!void,
 };
 
 pub const Device = struct {
     device_instance: *anyopaque = undefined,
-    apply_cmd: *const fn (TXEventPkg, []u8, *anyopaque) []const u8 = undefined,
+    apply_cmd: *const fn (TXPkg, []u8, *anyopaque) []const u8 = undefined,
     pool_data: *const fn (*anyopaque) []const u8,
     check_cmd: *const fn ([]const u8, []const u8, *anyopaque) DriverError!void,
     ok_handler: *const fn (*anyopaque) void,

@@ -447,6 +447,6 @@ pub const Package = union(enum) {
     AP_conf_pkg: APpkg,
     STA_conf_pkg: STApkg,
     static_ap_config: StaticIp,
+    static_sta_config: StaticIp,
     dhcp_config: DHCPConfig,
-    MAC_config: []const u8,
 };

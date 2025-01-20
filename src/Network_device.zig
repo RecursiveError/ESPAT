@@ -4,7 +4,9 @@ const Types = @import("Types.zig");
 const Device = Types.Device;
 const Runner = Types.Runner;
 const ToRead = Types.ToRead;
-const TXEventPkg = Types.TXEventPkg;
+const TXPkg = Types.TXPkg;
+const CommandPkg = Types.TXPkg;
+const Devices = Types.Devices;
 const DriverError = Types.DriverError;
 
 const Commands_util = @import("util/commands.zig");
@@ -16,6 +18,7 @@ const prefix = Commands_util.prefix;
 const postfix = Commands_util.postfix;
 
 const Network = @import("util/network.zig");
+pub const Package = Network.Package;
 pub const PackageType = Network.PackageType;
 pub const Event = Network.Event;
 pub const HandlerState = Network.HandlerState;
@@ -111,52 +114,48 @@ pub fn NetworkDevice(binds: usize) type {
             self.Network_corrent_pkg = null;
         }
 
-        fn apply_cmd(pkg: TXEventPkg, input_buffer: []u8, device_inst: *anyopaque) []const u8 {
+        fn apply_cmd(pkg: TXPkg, input_buffer: []u8, device_inst: *anyopaque) []const u8 {
             var self: *Self = @alignCast(@ptrCast(device_inst));
             const runner_inst = self.runner_loop.runner_instance;
+            const data: *const Package = @alignCast(@ptrCast(std.mem.bytesAsValue(Package, &pkg.buffer)));
 
-            switch (pkg.Extra_data) {
-                .Socket => |data| {
-                    const id = data.descriptor_id;
-                    switch (data.pkg_type) {
-                        .SendPkg => |to_send| {
-                            self.Network_corrent_pkg = ToSend{
-                                .data = to_send.data,
-                                .id = id,
-                            };
-                            self.runner_loop.set_busy_flag(1, runner_inst);
-                            return apply_send(id, to_send.data.len, input_buffer);
+            const id = data.descriptor_id;
+            switch (data.pkg_type) {
+                .SendPkg => |to_send| {
+                    self.Network_corrent_pkg = ToSend{
+                        .data = to_send.data,
+                        .id = id,
+                    };
+                    self.runner_loop.set_busy_flag(1, runner_inst);
+                    return apply_send(id, to_send.data.len, input_buffer);
+                },
+                .SendToPkg => |to_send| {
+                    self.Network_corrent_pkg = ToSend{
+                        .data = to_send.data,
+                        .id = id,
+                    };
+                    self.runner_loop.set_busy_flag(1, runner_inst);
+                    return apply_udp_send(id, to_send, input_buffer);
+                },
+                .AcceptPkg => |size| {
+                    return apply_accept(id, size, input_buffer);
+                },
+                .ClosePkg => {
+                    if (self.Network_binds[id]) |*bd| {
+                        bd.to_send -= 1;
+                    }
+                    return apply_close(id, input_buffer);
+                },
+                .ConnectConfig => |connpkg| {
+                    switch (connpkg.config) {
+                        .tcp, .ssl => |config| {
+                            return apply_tcp_config(id, connpkg, config, input_buffer);
                         },
-                        .SendToPkg => |to_send| {
-                            self.Network_corrent_pkg = ToSend{
-                                .data = to_send.data,
-                                .id = id,
-                            };
-                            self.runner_loop.set_busy_flag(1, runner_inst);
-                            return apply_udp_send(id, to_send, input_buffer);
-                        },
-                        .AcceptPkg => |size| {
-                            return apply_accept(id, size, input_buffer);
-                        },
-                        .ClosePkg => {
-                            if (self.Network_binds[id]) |*bd| {
-                                bd.to_send -= 1;
-                            }
-                            return apply_close(id, input_buffer);
-                        },
-                        .ConnectConfig => |connpkg| {
-                            switch (connpkg.config) {
-                                .tcp, .ssl => |config| {
-                                    return apply_tcp_config(id, connpkg, config, input_buffer);
-                                },
-                                .udp => |config| {
-                                    return apply_udp_config(id, connpkg, config, input_buffer);
-                                },
-                            }
+                        .udp => |config| {
+                            return apply_udp_config(id, connpkg, config, input_buffer);
                         },
                     }
                 },
-                else => {},
             }
             return "\r\n";
         }
@@ -242,6 +241,7 @@ pub fn NetworkDevice(binds: usize) type {
             if (id > self.Network_binds.len) return DriverError.INVALID_RESPONSE;
 
             if (self.Network_binds[id]) |*bd| {
+                bd.client.id = id;
                 bd.client.remote_host = data.remote_host;
                 bd.client.remote_port = data.remote_port;
                 bd.state = .Connected;
@@ -262,17 +262,18 @@ pub fn NetworkDevice(binds: usize) type {
 
             if (self.Network_binds[index]) |*bd| {
                 bd.state = .Closed;
+                const id = index;
 
                 //clear all pkgs from the TX pool
                 if (bd.to_send > 0) {
-                    const cmd_len = self.runner_loop.get_tx_len(runner_inst);
-                    for (0..cmd_len) |_| {
-                        const TX_pkg = self.runner_loop.get_tx_data(runner_inst).?;
-                        switch (TX_pkg.Extra_data) {
-                            .Socket => |*net_pkg| {
-                                const id = net_pkg.descriptor_id;
-                                if (id == index) {
-                                    switch (net_pkg.pkg_type) {
+                    const TX_size = self.runner_loop.get_tx_len(runner_inst);
+                    for (0..TX_size) |_| {
+                        const data = self.runner_loop.get_tx_data(runner_inst).?;
+                        switch (data.device) {
+                            .TCP_IP => {
+                                const net_data: *const Package = @alignCast(@ptrCast(std.mem.bytesAsValue(Package, &data.buffer)));
+                                if (id == net_data.descriptor_id) {
+                                    switch (net_data.pkg_type) {
                                         .SendPkg => |to_clear| {
                                             bd.client.event = .{ .SendData = .{
                                                 .data = to_clear.data,
@@ -287,10 +288,10 @@ pub fn NetworkDevice(binds: usize) type {
                             },
                             else => {},
                         }
-                        self.runner_loop.store_tx_data(TX_pkg, runner_inst) catch unreachable;
+                        self.runner_loop.store_tx_data(data, runner_inst) catch return;
                     }
-                    bd.to_send = 0;
                 }
+                bd.to_send = 0;
                 bd.client.event = .{ .Closed = {} };
                 bd.notify();
                 bd.client.remote_host = null;
@@ -327,12 +328,14 @@ pub fn NetworkDevice(binds: usize) type {
             if (data.id > self.Network_binds.len) return DriverError.INVALID_RESPONSE;
             const id = data.id;
             const data_size = data.data_len;
+            std.log.info("ID = {}", .{id});
 
             self.corrent_read_id = id;
             if (data.data_info) |info| {
                 if (self.Network_binds[id]) |*bd| {
                     bd.client.remote_host = info.remote_host;
                     bd.client.remote_port = info.remote_port;
+                    bd.client.id = id;
                 }
                 const read_request: ToRead = .{
                     .to_read = data_size,
@@ -386,10 +389,11 @@ pub fn NetworkDevice(binds: usize) type {
             var pkg: Commands_util.Package = .{};
             const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}={d}{s}", .{ prefix, get_cmd_string(.NETWORK_SERVER_CONF), self.div_binds, postfix }) catch unreachable;
             pkg.len = cmd_slice.len;
-            self.runner_loop.store_tx_data(TXEventPkg{
-                .cmd_enum = .NETWORK_SERVER_CONF,
-                .Extra_data = .{ .Command = pkg },
-            }, runner_inst) catch return DriverError.TX_BUFFER_FULL;
+
+            self.runner_loop.store_tx_data(
+                TXPkg.convert_type(.Command, pkg),
+                runner_inst,
+            ) catch return DriverError.TX_BUFFER_FULL;
 
             self.network_mode = mode;
         }
@@ -430,17 +434,14 @@ pub fn NetworkDevice(binds: usize) type {
             const runner_inst = self.runner_loop.runner_instance;
             if (id > self.Network_binds.len) return DriverError.INVALID_BIND;
             if (self.Network_binds[id]) |*bd| {
-                self.runner_loop.store_tx_data(TXEventPkg{
-                    .cmd_enum = .NETWORK_CLOSE,
-                    .Extra_data = .{
-                        .Socket = .{
-                            .descriptor_id = id,
-                            .pkg_type = .{
-                                .ClosePkg = {},
-                            },
-                        },
-                    },
-                }, runner_inst) catch return DriverError.TX_BUFFER_FULL;
+                const pkg = Package{
+                    .descriptor_id = id,
+                    .pkg_type = .{ .ClosePkg = {} },
+                };
+                self.runner_loop.store_tx_data(
+                    TXPkg.convert_type(.TCP_IP, pkg),
+                    runner_inst,
+                ) catch return DriverError.TX_BUFFER_FULL;
                 bd.to_send += 1;
                 return;
             }
@@ -469,38 +470,38 @@ pub fn NetworkDevice(binds: usize) type {
                 postfix,
             }) catch unreachable;
             recv_mode.len = cmd_slice.len;
-            self.runner_loop.store_tx_data(TXEventPkg{
-                .cmd_enum = .NETWORK_RECV_MODE,
-                .Extra_data = .{ .Command = recv_mode },
-            }, runner_inst) catch unreachable;
+            self.runner_loop.store_tx_data(
+                TXPkg.convert_type(
+                    .Command,
+                    recv_mode,
+                ),
+                runner_inst,
+            ) catch unreachable;
 
             //send connect request
-            const pkg = TXEventPkg{ .cmd_enum = .NETWORK_CONNECT, .Extra_data = .{
-                .Socket = .{
-                    .descriptor_id = id,
-                    .pkg_type = .{
-                        .ConnectConfig = config,
-                    },
+            const pkg = Package{
+                .descriptor_id = id,
+                .pkg_type = .{
+                    .ConnectConfig = config,
                 },
-            } };
-            self.runner_loop.store_tx_data(pkg, runner_inst) catch unreachable;
+            };
+            self.runner_loop.store_tx_data(
+                TXPkg.convert_type(
+                    .TCP_IP,
+                    pkg,
+                ),
+                runner_inst,
+            ) catch unreachable;
         }
         pub fn accept(self: *Self, id: usize) DriverError!void {
             const runner_inst = self.runner_loop.runner_instance;
 
             if (id >= self.Network_binds.len) return DriverError.INVALID_ARGS;
             const recv_buffer_size = 2046 - 50; //50bytes  of pre-data
-            self.runner_loop.store_tx_data(TXEventPkg{
-                .cmd_enum = .NETWORK_RECV,
-                .Extra_data = .{
-                    .Socket = .{
-                        .descriptor_id = id,
-                        .pkg_type = .{
-                            .AcceptPkg = recv_buffer_size,
-                        },
-                    },
-                },
-            }, runner_inst) catch return DriverError.TX_BUFFER_FULL;
+            const pkg = Package{ .descriptor_id = id, .pkg_type = .{
+                .AcceptPkg = recv_buffer_size,
+            } };
+            self.runner_loop.store_tx_data(TXPkg.convert_type(.TCP_IP, pkg), runner_inst) catch return DriverError.TX_BUFFER_FULL;
         }
 
         fn accpet_fn(ctx: *anyopaque, id: usize) Network.ClientError!void {
@@ -517,17 +518,13 @@ pub fn NetworkDevice(binds: usize) type {
             if (free_TX_cmd < 2) return DriverError.BUSY; //keep some space to other commands
 
             if (self.Network_binds[id]) |*bd| {
-                self.runner_loop.store_tx_data(TXEventPkg{
-                    .cmd_enum = .NETWORK_SEND,
-                    .Extra_data = .{
-                        .Socket = .{
-                            .descriptor_id = id,
-                            .pkg_type = .{
-                                .SendPkg = .{ .data = data },
-                            },
-                        },
+                const pkg = Package{
+                    .descriptor_id = id,
+                    .pkg_type = .{
+                        .SendPkg = .{ .data = data },
                     },
-                }, runner_inst) catch return DriverError.TX_BUFFER_FULL;
+                };
+                self.runner_loop.store_tx_data(TXPkg.convert_type(.TCP_IP, pkg), runner_inst) catch return DriverError.TX_BUFFER_FULL;
                 bd.to_send += 1;
                 return;
             }
@@ -551,22 +548,17 @@ pub fn NetworkDevice(binds: usize) type {
             if (remote_port == 0) return error.INVALID_ARGS;
 
             if (self.Network_binds[id]) |*bd| {
-                const pkg = TXEventPkg{
-                    .cmd_enum = .NETWORK_SEND,
-                    .Extra_data = .{
-                        .Socket = .{
-                            .descriptor_id = id,
-                            .pkg_type = .{
-                                .SendToPkg = .{
-                                    .data = data,
-                                    .remote_host = remote_host,
-                                    .remote_port = remote_port,
-                                },
-                            },
+                const pkg = Package{
+                    .descriptor_id = id,
+                    .pkg_type = .{
+                        .SendToPkg = .{
+                            .data = data,
+                            .remote_host = remote_host,
+                            .remote_port = remote_port,
                         },
                     },
                 };
-                self.runner_loop.store_tx_data(pkg, runner_inst) catch return DriverError.TX_BUFFER_FULL;
+                self.runner_loop.store_tx_data(TXPkg.convert_type(.TCP_IP, pkg), runner_inst) catch return DriverError.TX_BUFFER_FULL;
                 bd.to_send += 1;
                 return;
             }
@@ -598,10 +590,7 @@ pub fn NetworkDevice(binds: usize) type {
                 }) catch unreachable;
 
                 pkg.len = cmd_slice.len;
-                self.runner_loop.store_tx_data(TXEventPkg{
-                    .cmd_enum = .NETWORK_RECV_MODE,
-                    .Extra_data = .{ .Command = pkg },
-                }, runner_inst) catch unreachable;
+                self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), runner_inst) catch unreachable;
             } else {
                 if (self.runner_loop.get_tx_free_space(runner_inst) < (end_bind + 2)) return DriverError.TX_BUFFER_FULL;
                 for (0..end_bind) |id| {
@@ -614,10 +603,7 @@ pub fn NetworkDevice(binds: usize) type {
                     }) catch unreachable;
 
                     pkg.len = cmd_slice.len;
-                    self.runner_loop.store_tx_data(TXEventPkg{
-                        .cmd_enum = .NETWORK_RECV_MODE,
-                        .Extra_data = .{ .Command = pkg },
-                    }, runner_inst) catch unreachable;
+                    self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), runner_inst) catch unreachable;
                 }
             }
 
@@ -646,10 +632,7 @@ pub fn NetworkDevice(binds: usize) type {
                 else => return DriverError.INVALID_ARGS,
             }
             pkg.len = slice_len;
-            self.runner_loop.store_tx_data(TXEventPkg{
-                .cmd_enum = .NETWORK_SERVER,
-                .Extra_data = .{ .Command = pkg },
-            }, runner_inst) catch return DriverError.TX_BUFFER_FULL;
+            self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), runner_inst) catch unreachable;
 
             if (config.timeout) |timeout| {
                 const time = @min(7200, timeout);
@@ -660,10 +643,7 @@ pub fn NetworkDevice(binds: usize) type {
                     postfix,
                 }) catch unreachable;
                 pkg.len = cmd_slice.len;
-                self.runner_loop.store_tx_data(TXEventPkg{
-                    .cmd_enum = .NETWORK_SERVER_TIMEOUT,
-                    .Extra_data = .{ .Command = pkg },
-                }, runner_inst) catch unreachable;
+                self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), runner_inst) catch unreachable;
             }
 
             for (0..end_bind) |id| {
@@ -686,8 +666,9 @@ pub fn NetworkDevice(binds: usize) type {
                 const TX_size = self.runner_loop.get_tx_len(runner_inst);
                 for (0..TX_size) |_| {
                     const data = self.runner_loop.get_tx_data(runner_inst).?;
-                    switch (data.Extra_data) {
-                        .Socket => |net_data| {
+                    switch (data.device) {
+                        .TCP_IP => {
+                            const net_data: *const Package = @alignCast(@ptrCast(std.mem.bytesAsValue(Package, &data.buffer)));
                             if (id == net_data.descriptor_id) {
                                 switch (net_data.pkg_type) {
                                     .SendPkg => |to_clear| {
@@ -721,10 +702,7 @@ pub fn NetworkDevice(binds: usize) type {
             var pkg: Commands_util.Package = .{};
             const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=0,1{s}", .{ prefix, get_cmd_string(Commands.NETWORK_SERVER), postfix }) catch unreachable;
             pkg.len = cmd_slice.len;
-            self.runner_loop.store_tx_data(TXEventPkg{
-                .cmd_enum = .NETWORK_SERVER,
-                .Extra_data = .{ .Command = pkg },
-            }, runner_inst) catch DriverError.TX_BUFFER_FULL;
+            self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), runner_inst) catch DriverError.TX_BUFFER_FULL;
         }
 
         //functions
@@ -734,8 +712,8 @@ pub fn NetworkDevice(binds: usize) type {
             switch (info) {
                 .Pointer => |ptr| {
                     const child_type = ptr.child;
-                    if (@hasField(child_type, "net_device")) {
-                        const net_device = &runner.net_device;
+                    if (@hasField(child_type, "tcp_ip")) {
+                        const net_device = &runner.tcp_ip;
                         if (@TypeOf(net_device.*) == *Device) {
                             self.device.device_instance = self;
                             net_device.* = &self.device;

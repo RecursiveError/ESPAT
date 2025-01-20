@@ -5,7 +5,7 @@ const Types = @import("Types.zig");
 const Device = Types.Device;
 const Runner = Types.Runner;
 const ToRead = Types.ToRead;
-const TXEventPkg = Types.TXEventPkg;
+const TXPkg = Types.TXPkg;
 const DriverError = Types.DriverError;
 
 const Commands_util = @import("util/commands.zig");
@@ -61,7 +61,7 @@ pub fn StdRunner(comptime driver_config: Config) type {
 
         //internal control data, (Do not modify)
         RX_fifo: fifo.LinearFifo(u8, .{ .Static = driver_config.RX_size }),
-        TX_fifo: fifo.LinearFifo(TXEventPkg, .{ .Static = driver_config.TX_event_pool }),
+        TX_fifo: fifo.LinearFifo(TXPkg, .{ .Static = driver_config.TX_event_pool }),
         TX_wait_response: ?Commands = null,
         TXcallback_handler: TXcallback,
         RXcallback_handler: RXcallback,
@@ -93,16 +93,12 @@ pub fn StdRunner(comptime driver_config: Config) type {
             .get_tx_len = get_tx_len,
         },
 
-        net_device: *Device = undefined,
+        tcp_ip: *Device = undefined,
         WiFi_device: *Device = undefined,
-
-        pub fn set_net_dev(self: *Self, net_dev: *Device) void {
-            self.net_device = net_dev;
-        }
 
         fn set_busy_flag(flag: u1, inst: *anyopaque) void {
             var self: *Self = @alignCast(@ptrCast(inst));
-            self.busy_flag.Device = flag == 1;
+            self.busy_flag.Device = (flag == 1);
         }
 
         fn set_long_data(data: ToRead, inst: *anyopaque) void {
@@ -120,12 +116,12 @@ pub fn StdRunner(comptime driver_config: Config) type {
             return self.TX_fifo.readableLength();
         }
 
-        fn get_tx_data(inst: *anyopaque) ?TXEventPkg {
+        fn get_tx_data(inst: *anyopaque) ?TXPkg {
             var self: *Self = @alignCast(@ptrCast(inst));
             return self.TX_fifo.readItem();
         }
 
-        fn store_tx_data(pkg: TXEventPkg, inst: *anyopaque) DriverError!void {
+        fn store_tx_data(pkg: TXPkg, inst: *anyopaque) DriverError!void {
             var self: *Self = @alignCast(@ptrCast(inst));
             return self.TX_fifo.writeItem(pkg) catch return DriverError.TX_BUFFER_FULL;
         }
@@ -161,36 +157,22 @@ pub fn StdRunner(comptime driver_config: Config) type {
                 try @call(.auto, callback, .{ self, aux_buffer });
                 return;
             }
-            try self.net_device.check_cmd(response, aux_buffer, self.net_device.device_instance);
+            try self.tcp_ip.check_cmd(response, aux_buffer, self.tcp_ip.device_instance);
+            try self.WiFi_device.check_cmd(response, aux_buffer, self.WiFi_device.device_instance);
         }
 
         fn ok_response(self: *Self, _: []const u8) DriverError!void {
             self.busy_flag.Command = false;
-            const cmd = self.TX_wait_response;
-            if (cmd) |resp| {
-                if (self.on_cmd_response) |callback| {
-                    callback(.{ .Ok = {} }, resp, self.Error_handler_user_data);
-                }
-            }
             if (self.last_device) |dev| {
                 dev.ok_handler(dev.device_instance);
             }
-            self.TX_wait_response = null;
         }
 
         fn error_response(self: *Self, _: []const u8) DriverError!void {
-            const cmd = self.TX_wait_response;
             self.busy_flag.Command = false;
-            if (cmd) |resp| {
-                if (self.on_cmd_response) |callback| {
-                    callback(.{ .Error = self.last_error_code }, resp, self.Error_handler_user_data);
-                }
-            }
             if (self.last_device) |dev| {
                 dev.err_handler(dev.device_instance);
             }
-            self.last_error_code = .ESP_AT_UNKNOWN_ERROR; //reset error code handler
-            self.TX_wait_response = null;
         }
 
         fn fail_response(self: *Self, _: []const u8) DriverError!void {
@@ -214,6 +196,12 @@ pub fn StdRunner(comptime driver_config: Config) type {
         fn driver_ready(self: *Self, _: []const u8) DriverError!void {
             self.busy_flag.Command = false;
             self.busy_flag.Reset = false;
+        }
+
+        fn apply_cmd(self: *Self, pkg: TXPkg) []const u8 {
+            const data: *const Commands_util.Package = @alignCast(@ptrCast(std.mem.bytesAsValue(Commands_util.Package, &pkg.buffer)));
+            std.mem.copyForwards(u8, &self.internal_aux_buffer, data.str[0..data.len]);
+            return self.internal_aux_buffer[0..data.len];
         }
 
         pub fn process(self: *Self) DriverError!void {
@@ -271,41 +259,31 @@ pub fn StdRunner(comptime driver_config: Config) type {
 
         fn IDLE_TRANS(self: *Self) DriverError!void {
             const busy_bits: u4 = @bitCast(self.busy_flag);
-            if (busy_bits != 0) return;
-            const next_cmd = self.TX_fifo.readItem();
+            if (busy_bits != 0) {
+                return;
+            }
+            const next_cmd: ?TXPkg = self.TX_fifo.readItem();
             if (next_cmd) |cmd| {
                 self.busy_flag.Command = true;
-                self.TX_wait_response = cmd.cmd_enum;
-                switch (cmd.Extra_data) {
-                    .Reset => {
-                        self.TXcallback_handler("AT+RST\r\n", self.TX_RX_user_data);
-                        self.busy_flag.Reset = true;
+
+                switch (cmd.device) {
+                    .Command => {
+                        self.last_device = null;
+                        const to_send = self.apply_cmd(cmd);
+                        self.TXcallback_handler(to_send, self.TX_RX_user_data);
                     },
-                    .Command => |cmd_data| {
-                        const str = cmd_data.str;
-                        const len = cmd_data.len;
-                        self.TXcallback_handler(str[0..len], self.TX_RX_user_data);
+                    .TCP_IP => {
+                        const to_send = self.tcp_ip.apply_cmd(cmd, &self.internal_aux_buffer, self.tcp_ip.device_instance);
+                        self.TXcallback_handler(to_send, self.TX_RX_user_data);
+                        self.last_device = self.tcp_ip;
                     },
-                    .Socket => |_| {
-                        const apply_cmd = self.net_device.apply_cmd(
-                            cmd,
-                            &self.internal_aux_buffer,
-                            self.net_device.device_instance,
-                        );
-                        self.TXcallback_handler(apply_cmd, self.TX_RX_user_data);
-                        self.last_device = self.net_device;
-                    },
-                    .WiFi => |_| {
-                        const apply_cmd = self.WiFi_device.apply_cmd(
-                            cmd,
-                            &self.internal_aux_buffer,
-                            self.WiFi_device.device_instance,
-                        );
-                        self.TXcallback_handler(apply_cmd, self.TX_RX_user_data);
+                    .WiFi => {
+                        const to_send = self.WiFi_device.apply_cmd(cmd, &self.internal_aux_buffer, self.tcp_ip.device_instance);
+                        self.TXcallback_handler(to_send, self.TX_RX_user_data);
                         self.last_device = self.WiFi_device;
                     },
-                    .Bluetooth => {
-                        //TODO
+                    else => {
+                        return DriverError.NO_DEVICE;
                     },
                 }
             }
@@ -357,76 +335,48 @@ pub fn StdRunner(comptime driver_config: Config) type {
 
             //send dummy cmd to clear the module input
             var pkg: Commands_util.Package = .{};
+
             var cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}", .{ get_cmd_string(.DUMMY), postfix }) catch unreachable;
             pkg.len = cmd_slice.len;
-            self.TX_fifo.writeItem(
-                TXEventPkg{
-                    .cmd_enum = .DUMMY,
-                    .Extra_data = .{ .Command = pkg },
-                },
-            ) catch unreachable;
+            self.TX_fifo.writeItem(TXPkg.convert_type(.Command, pkg)) catch unreachable;
 
             //send RST request
-            self.TX_fifo.writeItem(TXEventPkg{
-                .cmd_enum = .RESET,
-                .Extra_data = .{ .Reset = {} },
-            }) catch unreachable;
+            self.TX_fifo.writeItem(TXPkg.convert_type(.Command, pkg)) catch unreachable;
 
             //desable ECHO
             cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}", .{ get_cmd_string(.ECHO_OFF), postfix }) catch unreachable;
             pkg.len = cmd_slice.len;
-            self.TX_fifo.writeItem(TXEventPkg{
-                .cmd_enum = .ECHO_OFF,
-                .Extra_data = .{ .Command = pkg },
-            }) catch unreachable;
+            self.TX_fifo.writeItem(TXPkg.convert_type(.Command, pkg)) catch unreachable;
 
             //disable sysstore
             cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=0{s}", .{ prefix, get_cmd_string(.SYSSTORE), postfix }) catch unreachable;
             pkg.len = cmd_slice.len;
-            self.TX_fifo.writeItem(TXEventPkg{
-                .cmd_enum = .SYSSTORE,
-                .Extra_data = .{ .Command = pkg },
-            }) catch unreachable;
+            self.TX_fifo.writeItem(TXPkg.convert_type(.Command, pkg)) catch unreachable;
 
             //enable error logs
             cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=1{s}", .{ prefix, get_cmd_string(.SYSLOG), postfix }) catch unreachable;
             pkg.len = cmd_slice.len;
-            self.TX_fifo.writeItem(TXEventPkg{
-                .cmd_enum = .SYSLOG,
-                .Extra_data = .{ .Command = pkg },
-            }) catch unreachable;
+            self.TX_fifo.writeItem(TXPkg.convert_type(.Command, pkg)) catch unreachable;
 
             //enable +LINK msg
             cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=2{s}", .{ prefix, get_cmd_string(.SYSMSG), postfix }) catch unreachable;
             pkg.len = cmd_slice.len;
-            self.TX_fifo.writeItem(TXEventPkg{
-                .cmd_enum = .SYSMSG,
-                .Extra_data = .{ .Command = pkg },
-            }) catch unreachable;
+            self.TX_fifo.writeItem(TXPkg.convert_type(.Command, pkg)) catch unreachable;
 
             //enable IP info
             cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=1{s}", .{ prefix, get_cmd_string(.NETWORK_MSG_CONFIG), postfix }) catch unreachable;
             pkg.len = cmd_slice.len;
-            self.TX_fifo.writeItem(TXEventPkg{
-                .cmd_enum = .NETWORK_MSG_CONFIG,
-                .Extra_data = .{ .Command = pkg },
-            }) catch unreachable;
+            self.TX_fifo.writeItem(TXPkg.convert_type(.Command, pkg)) catch unreachable;
 
             //enable multi-conn
             cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=1{s}", .{ prefix, get_cmd_string(.IP_MUX), postfix }) catch unreachable;
             pkg.len = cmd_slice.len;
-            self.TX_fifo.writeItem(TXEventPkg{
-                .cmd_enum = .IP_MUX,
-                .Extra_data = .{ .Command = pkg },
-            }) catch unreachable;
+            self.TX_fifo.writeItem(TXPkg.convert_type(.Command, pkg)) catch unreachable;
 
             //disable wifi auto connection
             cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=0{s}", .{ prefix, get_cmd_string(.WIFI_AUTOCONN), postfix }) catch unreachable;
             pkg.len = cmd_slice.len;
-            self.TX_fifo.writeItem(TXEventPkg{
-                .cmd_enum = .WIFI_AUTOCONN,
-                .Extra_data = .{ .Command = pkg },
-            }) catch unreachable;
+            self.TX_fifo.writeItem(TXPkg.convert_type(.Command, pkg)) catch unreachable;
 
             self.machine_state = Drive_states.IDLE;
         }
@@ -450,7 +400,7 @@ pub fn StdRunner(comptime driver_config: Config) type {
                 .TXcallback_handler = txcallback,
                 .TX_RX_user_data = user_data,
                 .RX_fifo = fifo.LinearFifo(u8, .{ .Static = driver_config.RX_size }).init(),
-                .TX_fifo = fifo.LinearFifo(TXEventPkg, .{ .Static = driver_config.TX_event_pool }).init(),
+                .TX_fifo = fifo.LinearFifo(TXPkg, .{ .Static = driver_config.TX_event_pool }).init(),
             };
             return driver;
         }

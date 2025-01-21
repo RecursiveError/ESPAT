@@ -38,8 +38,8 @@ pub const DriverMode = enum {
 };
 
 const ToSend = struct {
-    id: usize = 0,
-    data: []const u8 = undefined,
+    id: usize,
+    data: []const u8,
 };
 
 pub fn NetworkDevice(binds: usize) type {
@@ -64,7 +64,7 @@ pub fn NetworkDevice(binds: usize) type {
 
         //network data
         Network_binds: [binds]?Handler = undefined,
-        Network_corrent_pkg: ?ToSend = .{},
+        Network_corrent_pkg: ?ToSend = null,
         corrent_read_id: usize = 0,
         div_binds: usize = 0,
         network_mode: DriverMode = .CLIENT_ONLY,
@@ -114,10 +114,10 @@ pub fn NetworkDevice(binds: usize) type {
             self.Network_corrent_pkg = null;
         }
 
-        fn apply_cmd(pkg: TXPkg, input_buffer: []u8, device_inst: *anyopaque) []const u8 {
+        fn apply_cmd(pkg: TXPkg, input_buffer: []u8, device_inst: *anyopaque) DriverError![]const u8 {
             var self: *Self = @alignCast(@ptrCast(device_inst));
             const runner_inst = self.runner_loop.runner_instance;
-            const data: *const Package = @alignCast(@ptrCast(std.mem.bytesAsValue(Package, &pkg.buffer)));
+            const data = std.mem.bytesAsValue(Package, &pkg.buffer);
 
             const id = data.descriptor_id;
             switch (data.pkg_type) {
@@ -157,10 +157,10 @@ pub fn NetworkDevice(binds: usize) type {
                     }
                 },
             }
-            return "\r\n";
+            return DriverError.INVALID_PKG;
         }
 
-        fn pool_data(inst: *anyopaque) []const u8 {
+        fn pool_data(inst: *anyopaque) DriverError![]const u8 {
             const self: *Self = @alignCast(@ptrCast(inst));
             //if pkg is invalid, close the send request"
             if (self.Network_corrent_pkg) |pkg| {
@@ -241,7 +241,6 @@ pub fn NetworkDevice(binds: usize) type {
             if (id > self.Network_binds.len) return DriverError.INVALID_RESPONSE;
 
             if (self.Network_binds[id]) |*bd| {
-                bd.client.id = id;
                 bd.client.remote_host = data.remote_host;
                 bd.client.remote_port = data.remote_port;
                 bd.state = .Connected;
@@ -271,7 +270,7 @@ pub fn NetworkDevice(binds: usize) type {
                         const data = self.runner_loop.get_tx_data(runner_inst).?;
                         switch (data.device) {
                             .TCP_IP => {
-                                const net_data: *const Package = @alignCast(@ptrCast(std.mem.bytesAsValue(Package, &data.buffer)));
+                                const net_data = std.mem.bytesAsValue(Package, &data.buffer);
                                 if (id == net_data.descriptor_id) {
                                     switch (net_data.pkg_type) {
                                         .SendPkg => |to_clear| {
@@ -335,7 +334,6 @@ pub fn NetworkDevice(binds: usize) type {
                 if (self.Network_binds[id]) |*bd| {
                     bd.client.remote_host = info.remote_host;
                     bd.client.remote_port = info.remote_port;
-                    bd.client.id = id;
                 }
                 const read_request: ToRead = .{
                     .to_read = data_size,
@@ -668,7 +666,7 @@ pub fn NetworkDevice(binds: usize) type {
                     const data = self.runner_loop.get_tx_data(runner_inst).?;
                     switch (data.device) {
                         .TCP_IP => {
-                            const net_data: *const Package = @alignCast(@ptrCast(std.mem.bytesAsValue(Package, &data.buffer)));
+                            const net_data = std.mem.bytesAsValue(Package, &data.buffer);
                             if (id == net_data.descriptor_id) {
                                 switch (net_data.pkg_type) {
                                     .SendPkg => |to_clear| {
@@ -714,8 +712,8 @@ pub fn NetworkDevice(binds: usize) type {
                     const child_type = ptr.child;
                     if (@hasField(child_type, "tcp_ip")) {
                         const net_device = &runner.tcp_ip;
-                        if (@TypeOf(net_device.*) == *Device) {
-                            self.device.device_instance = self;
+                        if (@TypeOf(net_device.*) == ?*Device) {
+                            self.device.device_instance = @ptrCast(self);
                             net_device.* = &self.device;
                         } else {
                             @compileError("net_device need to be a Device pointer");

@@ -58,12 +58,12 @@ pub const WiFiDevice = struct {
     //callback handlers
     WiFi_user_data: ?*anyopaque = null,
     on_WiFi_event: WIFICallbackType = null,
-    STAFlag: bool,
+    STAFlag: bool align(1),
 
     //Device functions
 
-    fn pool_data(_: *anyopaque) []const u8 {
-        return "";
+    fn pool_data(_: *anyopaque) DriverError![]const u8 {
+        return DriverError.NO_POOL_DATA;
     }
 
     fn check_cmd(cmd: []const u8, buffer: []const u8, device_inst: *anyopaque) DriverError!void {
@@ -75,11 +75,11 @@ pub const WiFiDevice = struct {
         }
     }
 
-    fn apply_cmd(pkg: TXPkg, input_buffer: []u8, device_inst: *anyopaque) []const u8 {
+    fn apply_cmd(pkg: TXPkg, input_buffer: []u8, device_inst: *anyopaque) DriverError![]const u8 {
         var self: *WiFiDevice = @alignCast(@ptrCast(device_inst));
         const runner_inst = self.runner_loop.runner_instance;
 
-        const data: *const Package = @alignCast(@ptrCast(std.mem.bytesAsValue(Package, &pkg.buffer)));
+        const data = std.mem.bytesAsValue(Package, &pkg.buffer);
 
         switch (pkg.device) {
             .WiFi => {
@@ -105,7 +105,7 @@ pub const WiFiDevice = struct {
             },
             else => {},
         }
-        return "\r\n";
+        return DriverError.INVALID_PKG;
     }
 
     fn apply_WiFi_mac(cmd_data: Commands, mac: []const u8, input_buffer: []u8) []const u8 {
@@ -138,7 +138,10 @@ pub const WiFiDevice = struct {
     fn response_handler(device_inst: *anyopaque) void {
         var self: *WiFiDevice = @alignCast(@ptrCast(device_inst));
         const runner_inst = self.runner_loop.runner_instance;
-        self.runner_loop.set_busy_flag(0, runner_inst);
+        if (self.STAFlag) {
+            self.runner_loop.set_busy_flag(0, runner_inst);
+            self.STAFlag = false;
+        }
     }
 
     fn wifi_response(self: *WiFiDevice, aux_buffer: []const u8) DriverError!void {
@@ -396,8 +399,8 @@ pub const WiFiDevice = struct {
                 const child_type = ptr.child;
                 if (@hasField(child_type, "WiFi_device")) {
                     const device = &runner.WiFi_device;
-                    if (@TypeOf(device.*) == *Device) {
-                        self.device.device_instance = self;
+                    if (@TypeOf(device.*) == ?*Device) {
+                        self.device.device_instance = @ptrCast(self);
                         device.* = &self.device;
                     } else {
                         @compileError("WiFi_device need to be a Device pointer");

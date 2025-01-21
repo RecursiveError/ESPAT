@@ -13,10 +13,6 @@ pub const DriverError = error{
     RX_BUFFER_FULL,
     TX_BUFFER_FULL,
     TASK_BUFFER_FULL,
-    NETWORK_BUFFER_FULL,
-    AUX_BUFFER_EMPTY,
-    AUX_BUFFER_FULL,
-    NETWORK_BUFFER_EMPTY,
     INVALID_RESPONSE,
     NO_DEVICE,
     MAX_BIND,
@@ -24,6 +20,8 @@ pub const DriverError = error{
     INVALID_NETWORK_TYPE,
     INVALID_ARGS,
     NON_RECOVERABLE_ERROR,
+    INVALID_PKG,
+    NO_POOL_DATA,
     UNKNOWN_ERROR,
 };
 
@@ -87,8 +85,8 @@ pub const Runner = struct {
 
 pub const Device = struct {
     device_instance: *anyopaque = undefined,
-    apply_cmd: *const fn (TXPkg, []u8, *anyopaque) []const u8 = undefined,
-    pool_data: *const fn (*anyopaque) []const u8,
+    apply_cmd: *const fn (TXPkg, []u8, *anyopaque) DriverError![]const u8,
+    pool_data: *const fn (*anyopaque) DriverError![]const u8,
     check_cmd: *const fn ([]const u8, []const u8, *anyopaque) DriverError!void,
     ok_handler: *const fn (*anyopaque) void,
     err_handler: *const fn (*anyopaque) void,

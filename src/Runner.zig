@@ -93,8 +93,8 @@ pub fn StdRunner(comptime driver_config: Config) type {
             .get_tx_len = get_tx_len,
         },
 
-        tcp_ip: *Device = undefined,
-        WiFi_device: *Device = undefined,
+        tcp_ip: ?*Device = null,
+        WiFi_device: ?*Device = null,
 
         fn set_busy_flag(flag: u1, inst: *anyopaque) void {
             var self: *Self = @alignCast(@ptrCast(inst));
@@ -157,8 +157,11 @@ pub fn StdRunner(comptime driver_config: Config) type {
                 try @call(.auto, callback, .{ self, aux_buffer });
                 return;
             }
-            try self.tcp_ip.check_cmd(response, aux_buffer, self.tcp_ip.device_instance);
-            try self.WiFi_device.check_cmd(response, aux_buffer, self.WiFi_device.device_instance);
+            for (&[_]?*Device{ self.tcp_ip, self.WiFi_device }) |device| {
+                if (device) |dev| {
+                    try dev.check_cmd(response, aux_buffer, dev.device_instance);
+                }
+            }
         }
 
         fn ok_response(self: *Self, _: []const u8) DriverError!void {
@@ -199,7 +202,7 @@ pub fn StdRunner(comptime driver_config: Config) type {
         }
 
         fn apply_cmd(self: *Self, pkg: TXPkg) []const u8 {
-            const data: *const Commands_util.Package = @alignCast(@ptrCast(std.mem.bytesAsValue(Commands_util.Package, &pkg.buffer)));
+            const data = std.mem.bytesAsValue(Commands_util.Package, &pkg.buffer);
             std.mem.copyForwards(u8, &self.internal_aux_buffer, data.str[0..data.len]);
             return self.internal_aux_buffer[0..data.len];
         }
@@ -244,11 +247,14 @@ pub fn StdRunner(comptime driver_config: Config) type {
                     } else if ((data == '>') and (self.internal_aux_buffer_pos == 1)) {
                         self.internal_aux_buffer_pos = 0;
                         if (self.last_device) |dev| {
-                            const send_data = dev.pool_data(dev.device_instance);
+                            const send_data = dev.pool_data(dev.device_instance) catch |err| {
+                                self.machine_state = .FATAL_ERROR; //cannot find device to pool data from
+                                return err;
+                            };
                             self.TXcallback_handler(send_data, self.TX_RX_user_data);
                         } else {
                             self.machine_state = .FATAL_ERROR; //cannot find device to pool data from
-                            return;
+                            return DriverError.NO_POOL_DATA;
                         }
                     }
                 } else {
@@ -271,21 +277,27 @@ pub fn StdRunner(comptime driver_config: Config) type {
                         self.last_device = null;
                         const to_send = self.apply_cmd(cmd);
                         self.TXcallback_handler(to_send, self.TX_RX_user_data);
+                        return;
                     },
                     .TCP_IP => {
-                        const to_send = self.tcp_ip.apply_cmd(cmd, &self.internal_aux_buffer, self.tcp_ip.device_instance);
-                        self.TXcallback_handler(to_send, self.TX_RX_user_data);
-                        self.last_device = self.tcp_ip;
+                        if (self.tcp_ip) |dev| {
+                            const to_send = try dev.apply_cmd(cmd, &self.internal_aux_buffer, dev.device_instance);
+                            self.TXcallback_handler(to_send, self.TX_RX_user_data);
+                            self.last_device = dev;
+                            return;
+                        }
                     },
                     .WiFi => {
-                        const to_send = self.WiFi_device.apply_cmd(cmd, &self.internal_aux_buffer, self.tcp_ip.device_instance);
-                        self.TXcallback_handler(to_send, self.TX_RX_user_data);
-                        self.last_device = self.WiFi_device;
+                        if (self.WiFi_device) |dev| {
+                            const to_send = try dev.apply_cmd(cmd, &self.internal_aux_buffer, dev.device_instance);
+                            self.TXcallback_handler(to_send, self.TX_RX_user_data);
+                            self.last_device = dev;
+                            return;
+                        }
                     },
-                    else => {
-                        return DriverError.NO_DEVICE;
-                    },
+                    else => {},
                 }
+                return DriverError.NO_DEVICE;
             }
         }
 

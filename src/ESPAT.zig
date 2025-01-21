@@ -8,6 +8,7 @@ pub const StandartRunner = struct {
     pub const TXcallback = RunnerRoot.TXcallback;
     pub const RXcallback = RunnerRoot.RXcallback;
     pub const ReponseEvent = RunnerRoot.ReponseEvent;
+    pub const UartConfig = RunnerRoot.UartConfig;
 };
 
 pub const Network = struct {

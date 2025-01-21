@@ -64,10 +64,10 @@ pub const FlowControl = enum {
 
 pub const UartConfig = struct {
     baudrate: u32,
-    databits: DataBits,
-    stopbits: StopBits,
-    parity: Parity,
-    flowcontrol: FlowControl,
+    databits: DataBits = .@"8",
+    stopbits: StopBits = .@"1",
+    parity: Parity = .none,
+    flowcontrol: FlowControl = .none,
 };
 
 pub const TXcallback = *const fn (data: []const u8, user_data: ?*anyopaque) void;

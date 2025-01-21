@@ -93,6 +93,15 @@ pub const WiFiDevice = struct {
                         self.STAFlag = true;
                         return WiFi_apply_STA_config(wpkg, input_buffer);
                     },
+                    .reconn => |_| {
+                        self.runner_loop.set_busy_flag(1, runner_inst);
+                        self.STAFlag = true;
+                        return std.fmt.bufPrint(input_buffer, "{s}{s}{s}", .{
+                            prefix,
+                            get_cmd_string(.WIFI_CONNECT),
+                            postfix,
+                        }) catch unreachable;
+                    },
                     .static_ap_config => |wpkg| {
                         return apply_static_ip(.WIFI_AP_IP, wpkg, input_buffer);
                     },
@@ -288,6 +297,11 @@ pub const WiFiDevice = struct {
         const wpkg = Package{ .STA_conf_pkg = WiFi.STApkg.from_config(config) };
 
         self.runner_loop.store_tx_data(TXPkg.convert_type(.WiFi, wpkg), inst) catch unreachable;
+    }
+
+    pub fn WiFI_reconnect(self: *WiFiDevice) DriverError!void {
+        const inst = self.runner_loop.runner_instance;
+        self.runner_loop.store_tx_data(TXPkg.convert_type(.WiFi, Package{ .reconn = {} }), inst);
     }
 
     pub fn WiFi_config_AP(self: *WiFiDevice, config: APConfig) !void {

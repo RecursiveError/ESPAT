@@ -337,7 +337,6 @@ pub fn NetworkDevice(binds: usize) type {
             if (data.id > self.Network_binds.len) return DriverError.INVALID_RESPONSE;
             const id = data.id;
             const data_size = data.data_len;
-            std.log.info("ID = {}", .{id});
 
             self.corrent_read_id = id;
             if (data.data_info) |info| {

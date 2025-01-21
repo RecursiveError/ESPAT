@@ -25,10 +25,8 @@ pub const Config = struct {
 };
 
 const BusyBitFlags = packed struct {
-    Reset: bool = false,
     Command: bool = false,
     Device: bool = false,
-    Bluetooth: bool = false,
 };
 
 const Drive_states = enum {
@@ -36,6 +34,40 @@ const Drive_states = enum {
     IDLE,
     OFF,
     FATAL_ERROR,
+};
+
+pub const DataBits = enum(u8) {
+    @"5" = 5,
+    @"6" = 6,
+    @"7" = 7,
+    @"8" = 8,
+};
+
+pub const StopBits = enum(u8) {
+    @"1" = 1,
+    @"1.5" = 2,
+    @"2" = 3,
+};
+
+pub const Parity = enum {
+    none,
+    odd,
+    even,
+};
+
+pub const FlowControl = enum {
+    none,
+    rts,
+    cts,
+    both,
+};
+
+pub const UartConfig = struct {
+    baudrate: u32,
+    databits: DataBits,
+    stopbits: StopBits,
+    parity: Parity,
+    flowcontrol: FlowControl,
 };
 
 pub const TXcallback = *const fn (data: []const u8, user_data: ?*anyopaque) void;
@@ -82,6 +114,7 @@ pub fn StdRunner(comptime driver_config: Config) type {
         TX_RX_user_data: ?*anyopaque = null,
         Error_handler_user_data: ?*anyopaque = null,
         on_cmd_response: ResponseCallback = null,
+        init_flag: bool align(1) = false,
 
         runner_dev: Runner = .{
             .runner_instance = undefined,
@@ -197,13 +230,22 @@ pub fn StdRunner(comptime driver_config: Config) type {
         }
 
         fn driver_ready(self: *Self, _: []const u8) DriverError!void {
-            self.busy_flag.Command = false;
-            self.busy_flag.Reset = false;
+            //check if ESP as reset
+            if (!self.init_flag) {
+                self.busy_flag.Device = false;
+                self.init_flag = true;
+                return;
+            }
+            self.machine_state = .FATAL_ERROR;
+            return DriverError.NON_RECOVERABLE_ERROR;
         }
 
         fn apply_cmd(self: *Self, pkg: TXPkg) []const u8 {
             const data = std.mem.bytesAsValue(Commands_util.Package, &pkg.buffer);
             std.mem.copyForwards(u8, &self.internal_aux_buffer, data.str[0..data.len]);
+            if (data.busy) {
+                self.busy_flag.Device = true;
+            }
             return self.internal_aux_buffer[0..data.len];
         }
 
@@ -264,7 +306,7 @@ pub fn StdRunner(comptime driver_config: Config) type {
         }
 
         fn IDLE_TRANS(self: *Self) DriverError!void {
-            const busy_bits: u4 = @bitCast(self.busy_flag);
+            const busy_bits: u2 = @bitCast(self.busy_flag);
             if (busy_bits != 0) {
                 return;
             }
@@ -336,7 +378,23 @@ pub fn StdRunner(comptime driver_config: Config) type {
             self.long_data_request = false;
         }
 
-        //TODO; make a event pool just to init commands
+        pub fn set_UART(self: *Self, config: UartConfig) !void {
+            if ((self.machine_state != .init) or (self.machine_state != .OFF)) return error.DriverRunning;
+            if ((config.baudrate > 50_000_000) or (config.baudrate < 80)) return error.INVALID_ARGS;
+            const cmd = try std.fmt.bufPrint(&self.internal_aux_buffer, "{s}{s}{s}={d},{d},{d},{d},{d}{s}", .{
+                prefix,
+                "UART",
+                infix,
+                config.baudrate,
+                @intFromEnum(config.databits),
+                @intFromEnum(config.stopbits),
+                @intFromEnum(config.parity),
+                @intFromEnum(config.flowcontrol),
+                postfix,
+            });
+            self.TXcallback_handler(cmd, self.TX_RX_user_data);
+            self.internal_aux_buffer_pos = 0;
+        }
         pub fn init_driver(self: *Self) !void {
 
             //clear buffers
@@ -344,16 +402,21 @@ pub fn StdRunner(comptime driver_config: Config) type {
             self.RX_fifo.discard(self.RX_fifo.readableLength());
             self.TX_fifo.discard(self.TX_fifo.readableLength());
             self.runner_dev.runner_instance = self;
+            self.init_flag = false;
 
-            //send dummy cmd to clear the module input
             var pkg: Commands_util.Package = .{};
 
+            //send dummy cmd to clear the module input
             var cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}", .{ get_cmd_string(.DUMMY), postfix }) catch unreachable;
             pkg.len = cmd_slice.len;
             self.TX_fifo.writeItem(TXPkg.convert_type(.Command, pkg)) catch unreachable;
 
             //send RST request
+            cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}{s}", .{ prefix, get_cmd_string(.RESET), postfix }) catch unreachable;
+            pkg.len = cmd_slice.len;
+            pkg.busy = true;
             self.TX_fifo.writeItem(TXPkg.convert_type(.Command, pkg)) catch unreachable;
+            pkg.busy = false;
 
             //desable ECHO
             cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}", .{ get_cmd_string(.ECHO_OFF), postfix }) catch unreachable;

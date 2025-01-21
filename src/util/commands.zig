@@ -136,4 +136,5 @@ pub fn parser_error(str: []const u8) CommandsErrorCode {
 pub const Package = struct {
     str: [60]u8 = undefined,
     len: usize = 0,
+    busy: bool = false,
 };

@@ -176,10 +176,11 @@ pub fn StdRunner(comptime driver_config: Config) type {
             }
         }
 
-        pub fn notify(self: *Self, data: []const u8) usize {
+        pub fn feed(self: *Self, data: []const u8) DriverError!usize {
             const free_space = self.get_rx_free_space();
             const slice = if (data.len > free_space) data[0..free_space] else data;
             self.RX_fifo.write(slice) catch unreachable;
+            try self.process();
             return slice.len;
         }
 

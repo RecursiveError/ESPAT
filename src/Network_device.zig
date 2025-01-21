@@ -60,6 +60,7 @@ pub fn NetworkDevice(binds: usize) type {
             .apply_cmd = apply_cmd,
             .ok_handler = ok_handler,
             .err_handler = err_handler,
+            .deinit = deinit,
         },
 
         //network data
@@ -175,6 +176,15 @@ pub fn NetworkDevice(binds: usize) type {
             }
             //send stop code on invalid pkgs (yes stop code is '\''0' not '\0')
             return "\\0";
+        }
+
+        fn deinit(inst: *anyopaque) void {
+            const self: *Self = @alignCast(@ptrCast(inst));
+            for (0..binds) |id| {
+                self.release(id) catch continue;
+            }
+
+            self.delete_server() catch return;
         }
 
         fn apply_send(id: usize, data_len: usize, buffer: []u8) []const u8 {
@@ -693,14 +703,14 @@ pub fn NetworkDevice(binds: usize) type {
             const runner_inst = self.runner_loop.runner_instance;
 
             for (0..self.div_binds) |bind_id| {
-                self.release(bind_id);
+                try self.release(bind_id);
             }
 
             //send server close server command
             var pkg: Commands_util.Package = .{};
             const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=0,1{s}", .{ prefix, get_cmd_string(Commands.NETWORK_SERVER), postfix }) catch unreachable;
             pkg.len = cmd_slice.len;
-            self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), runner_inst) catch DriverError.TX_BUFFER_FULL;
+            self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), runner_inst) catch return DriverError.TX_BUFFER_FULL;
         }
 
         //functions

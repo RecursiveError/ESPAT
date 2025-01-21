@@ -393,9 +393,13 @@ pub fn StdRunner(comptime driver_config: Config) type {
             self.machine_state = Drive_states.IDLE;
         }
 
-        //TODO: send reaming network pkgs with "SendData Fail" event for avoid memory leaks
         pub fn deinit_driver(self: *Self) void {
-            //TODO: Clear all WiFi data Here
+            for (&[_]?*Device{ self.tcp_ip, self.WiFi_device }) |dev| {
+                if (dev) |inst| {
+                    inst.deinit(inst.device_instance);
+                }
+            }
+            self.last_device = null;
             self.machine_state = .OFF;
         }
 

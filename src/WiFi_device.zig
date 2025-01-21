@@ -50,6 +50,7 @@ pub const WiFiDevice = struct {
         .apply_cmd = apply_cmd,
         .ok_handler = ok_handler,
         .err_handler = err_handler,
+        .deinit = deinit,
     },
 
     Wifi_state: state = .OFF,
@@ -142,6 +143,11 @@ pub const WiFiDevice = struct {
             self.runner_loop.set_busy_flag(0, runner_inst);
             self.STAFlag = false;
         }
+    }
+
+    fn deinit(device_inst: *anyopaque) void {
+        var self: *WiFiDevice = @alignCast(@ptrCast(device_inst));
+        self.Wifi_state = .OFF;
     }
 
     fn wifi_response(self: *WiFiDevice, aux_buffer: []const u8) DriverError!void {

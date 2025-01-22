@@ -68,3 +68,21 @@ pub const Types = struct {
 
     pub const Device = TypesRoot.Device;
 };
+
+pub const ESP8266Network = struct {
+    pub const NetworkRoot = @import("ESP8266_support.zig");
+
+    pub const PackageType = NetworkRoot.PackageType;
+    pub const Event = NetworkRoot.Event;
+    pub const HandlerState = NetworkRoot.HandlerState;
+    pub const ConnectConfig = NetworkRoot.ConnectConfig;
+    pub const ServerConfig = NetworkRoot.ServerConfig;
+    pub const TCPConn = NetworkRoot.TCPConn;
+    pub const UDPConn = NetworkRoot.UDPConn;
+    pub const HandlerType = NetworkRoot.HandlerType;
+    pub const Handler = NetworkRoot.Handler;
+    pub const Client = NetworkRoot.Client;
+    pub const ClientCallback = NetworkRoot.ClientCallback;
+    pub const DriveMode = NetworkRoot.DriverMode;
+    pub const Device = NetworkRoot.NetworkDevice;
+};

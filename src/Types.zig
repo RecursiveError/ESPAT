@@ -23,6 +23,7 @@ pub const DriverError = error{
     INVALID_PKG,
     NO_POOL_DATA,
     UNKNOWN_ERROR,
+    UNSUPPORTED,
 };
 
 pub const Devices = enum {

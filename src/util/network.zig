@@ -14,15 +14,23 @@ pub const SEND_RESPONSE_TOKEN = [_][]const u8{
 };
 
 //TODO: add more events
+
+pub const SendState = enum {
+    Ok,
+    Fail,
+    cancel,
+};
+
+pub const SendResult = struct {
+    state: SendState,
+    data: []const u8 = undefined,
+};
 pub const Event = union(enum) {
     Connected: void,
     Closed: void,
     DataReport: usize,
     ReadData: []const u8,
-    SendDataComplete: []const u8,
-    SendDataCancel: []const u8,
-    SendDataOk: void,
-    SendDataFail: void,
+    SendData: SendResult,
 };
 
 pub const RecvMode = enum(u1) {
@@ -228,6 +236,8 @@ pub fn paser_ip_data(str: []const u8) !IpData {
     if (id_str == null) return error.InvalidPkg;
     if (data_str == null) return error.InvalidPkg;
 
+    std.log.info("ID {s} buffer {s}", .{ id_str.?, str });
+
     const id = std.fmt.parseInt(usize, id_str.?, 10) catch return error.InvalidId;
 
     const data_size_slice = get_cmd_slice(data_str.?, &[_]u8{}, &[_]u8{'\r'});
@@ -349,4 +359,9 @@ pub const Handler = struct {
             callback(self.client, self.user_data);
         }
     }
+};
+
+pub const Package = struct {
+    descriptor_id: usize = 255,
+    pkg_type: PackageType,
 };

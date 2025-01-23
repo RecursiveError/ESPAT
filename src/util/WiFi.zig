@@ -442,3 +442,12 @@ pub fn set_DHCP_config(out_buffer: []u8, config: DHCPConfig) ![]const u8 {
     const cmd_size = cmd_slice.len;
     return out_buffer[0..cmd_size];
 }
+
+pub const Package = union(enum) {
+    AP_conf_pkg: APpkg,
+    STA_conf_pkg: STApkg,
+    reconn: void,
+    static_ap_config: StaticIp,
+    static_sta_config: StaticIp,
+    dhcp_config: DHCPConfig,
+};

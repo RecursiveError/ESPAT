@@ -132,3 +132,9 @@ pub fn parser_error(str: []const u8) CommandsErrorCode {
     if (error_flag > @intFromEnum(CommandsErrorCode.ESP_AT_SUB_CMD_OP_ERROR)) return .ESP_AT_UNKNOWN_ERROR;
     return @enumFromInt(error_flag);
 }
+
+pub const Package = struct {
+    str: [60]u8 = undefined,
+    len: usize = 0,
+    busy: bool = false,
+};

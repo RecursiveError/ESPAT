@@ -385,7 +385,7 @@ pub fn StdRunner(comptime driver_config: Config) type {
             const cmd = try std.fmt.bufPrint(&self.internal_aux_buffer, "{s}{s}{s}={d},{d},{d},{d},{d}{s}", .{
                 prefix,
                 "UART",
-                infix,
+                "_DEF",
                 config.baudrate,
                 @intFromEnum(config.databits),
                 @intFromEnum(config.stopbits),

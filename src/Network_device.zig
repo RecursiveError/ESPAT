@@ -43,6 +43,9 @@ const ToSend = struct {
 };
 
 pub fn NetworkDevice(binds: usize) type {
+    if (binds < 5) {
+        @compileError("Binds cannot be less than 5");
+    }
     return struct {
         const Self = @This();
         const CMD_CALLBACK_TYPE = *const fn (self: *Self, buffer: []const u8) DriverError!void;

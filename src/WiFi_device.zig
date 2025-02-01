@@ -21,6 +21,7 @@ pub const APConfig = WiFi.APConfig;
 pub const STAConfig = WiFi.STAConfig;
 pub const Event = WiFi.Event;
 pub const Encryption = WiFi.Encryption;
+pub const ScanConfig = WiFi.ScanConfig;
 
 pub const DriverMode = enum { NONE, STA, AP, AP_STA };
 
@@ -32,10 +33,17 @@ pub const state = enum {
 
 pub const WIFICallbackType = ?*const fn (event: WiFi.Event, user_data: ?*anyopaque) void;
 
+const lastFlag = enum {
+    NONE,
+    STA,
+    SCAN,
+};
+
 pub const WiFiDevice = struct {
     const CMD_CALLBACK_TYPE = *const fn (self: *WiFiDevice, buffer: []const u8) DriverError!void;
     const cmd_response_map = std.StaticStringMap(CMD_CALLBACK_TYPE).initComptime(.{
         .{ "WIFI", WiFiDevice.wifi_response },
+        .{ "+CWLAP", WiFiDevice.WiFi_get_scan_data },
         .{ "+CIPSTA", WiFiDevice.WiFi_get_AP_info },
         .{ "+CWJAP", WiFiDevice.WiFi_error },
         .{ "+STA_CONNECTED", WiFiDevice.WiFi_get_device_conn_mac },
@@ -59,7 +67,7 @@ pub const WiFiDevice = struct {
     //callback handlers
     WiFi_user_data: ?*anyopaque = null,
     on_WiFi_event: WIFICallbackType = null,
-    STAFlag: bool align(1),
+    lastflag: lastFlag align(1) = .NONE,
 
     //Device functions
 
@@ -85,17 +93,28 @@ pub const WiFiDevice = struct {
         switch (pkg.device) {
             .WiFi => {
                 switch (data.*) {
+                    .scan => {
+                        if (self.on_WiFi_event) |callback| {
+                            callback(Event{ .SCAN_START = {} }, self.WiFi_user_data);
+                        }
+                        self.lastflag = .SCAN;
+                        return std.fmt.bufPrint(input_buffer, "{s}{s}{s}", .{
+                            prefix,
+                            "CWLAP",
+                            postfix,
+                        }) catch unreachable;
+                    },
                     .AP_conf_pkg => |wpkg| {
                         return WiFi_apply_AP_config(wpkg, input_buffer);
                     },
                     .STA_conf_pkg => |wpkg| {
                         self.runner_loop.set_busy_flag(1, runner_inst);
-                        self.STAFlag = true;
+                        self.lastflag = .STA;
                         return WiFi_apply_STA_config(wpkg, input_buffer);
                     },
                     .reconn => |_| {
                         self.runner_loop.set_busy_flag(1, runner_inst);
-                        self.STAFlag = true;
+                        self.lastflag = .STA;
                         return std.fmt.bufPrint(input_buffer, "{s}{s}{s}", .{
                             prefix,
                             get_cmd_string(.WIFI_CONNECT),
@@ -148,10 +167,18 @@ pub const WiFiDevice = struct {
     fn response_handler(device_inst: *anyopaque) void {
         var self: *WiFiDevice = @alignCast(@ptrCast(device_inst));
         const runner_inst = self.runner_loop.runner_instance;
-        if (self.STAFlag) {
-            self.runner_loop.set_busy_flag(0, runner_inst);
-            self.STAFlag = false;
+        switch (self.lastflag) {
+            .STA => {
+                self.runner_loop.set_busy_flag(0, runner_inst);
+            },
+            .SCAN => {
+                if (self.on_WiFi_event) |callback| {
+                    callback(Event{ .SCAN_END = {} }, self.WiFi_user_data);
+                }
+            },
+            .NONE => return,
         }
+        self.lastflag = .NONE;
     }
 
     fn deinit(device_inst: *anyopaque) void {
@@ -178,6 +205,13 @@ pub const WiFiDevice = struct {
         }
         if (self.on_WiFi_event) |callback| {
             callback(event, self.WiFi_user_data);
+        }
+    }
+
+    fn WiFi_get_scan_data(self: *WiFiDevice, aux_buffer: []const u8) DriverError!void {
+        const data = WiFi.parser_scan_data(aux_buffer) catch return DriverError.INVALID_ARGS;
+        if (self.on_WiFi_event) |callback| {
+            callback(Event{ .SCAN_FIND = data }, self.WiFi_user_data);
         }
     }
 
@@ -237,6 +271,57 @@ pub const WiFiDevice = struct {
     }
 
     //WiFi functions
+
+    //init WiFi driver on the ESP32
+    pub fn init_driver(self: *WiFiDevice) DriverError!void {
+        const inst = self.runner_loop.runner_instance;
+
+        var pkg: Commands_util.Package = .{};
+        const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}={d}{s}", .{
+            prefix,
+            "CWINIT",
+            1,
+            postfix,
+        }) catch unreachable;
+        pkg.len = cmd_slice.len;
+        try self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), inst);
+    }
+
+    pub fn deinit_driver(self: *WiFiDevice) DriverError!void {
+        const inst = self.runner_loop.runner_instance;
+
+        var pkg: Commands_util.Package = .{};
+        const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}={d}{s}", .{
+            prefix,
+            "CWINIT",
+            0,
+            postfix,
+        }) catch unreachable;
+        pkg.len = cmd_slice.len;
+        try self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), inst);
+    }
+
+    pub fn scan(self: *WiFiDevice, scanconfig: ScanConfig) DriverError!void {
+        if (self.Wifi_mode == .NONE) return DriverError.WIFI_OFF;
+        const inst = self.runner_loop.runner_instance;
+        const free_pkgs = self.runner_loop.get_tx_free_space(inst);
+        if (free_pkgs < 2) return DriverError.TX_BUFFER_FULL;
+        if ((scanconfig.rssi_filter < -100) or (scanconfig.rssi_filter > 40)) return DriverError.INVALID_ARGS;
+
+        var pkg: Commands_util.Package = .{};
+        const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=,{d},{d},{d}{s}", .{
+            prefix,
+            "CWLAPOPT",
+            0x7FF,
+            scanconfig.rssi_filter,
+            @as(u10, @bitCast(scanconfig.auth_mode_mask)),
+            postfix,
+        }) catch unreachable;
+        pkg.len = cmd_slice.len;
+        self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), inst) catch unreachable;
+        self.runner_loop.store_tx_data(TXPkg.convert_type(.WiFi, Package{ .scan = {} }), inst) catch unreachable;
+    }
+
     pub fn WiFi_connect_AP(self: *WiFiDevice, config: STAConfig) !void {
         const inst = self.runner_loop.runner_instance;
 
@@ -446,6 +531,6 @@ pub const WiFiDevice = struct {
     }
 
     pub fn init() WiFiDevice {
-        return WiFiDevice{ .STAFlag = false };
+        return WiFiDevice{};
     }
 };

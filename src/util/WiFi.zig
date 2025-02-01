@@ -162,6 +162,9 @@ pub const Event = union(enum) {
     AP_GOT_GATEWAY: []const u8,
     AP_DISCONNECTED: void,
     //events received from the stations (when in access point mode)
+    SCAN_START: void,
+    SCAN_FIND: ScanData,
+    SCAN_END: void,
     STA_CONNECTED: []const u8,
     STA_GOT_IP: DeviceInfo,
     STA_DISCONNECTED: []const u8,
@@ -177,6 +180,72 @@ const RESPOSE_TOKEN = std.StaticStringMap(BaseEvent).initComptime(.{
     .{ "gateway", BaseEvent.AP_GOT_GATEWAY },
     .{ "netmask", BaseEvent.AP_GOT_MASK },
 });
+
+pub const Package = union(enum) {
+    scan: void,
+    AP_conf_pkg: APpkg,
+    STA_conf_pkg: STApkg,
+    reconn: void,
+    static_ap_config: StaticIp,
+    static_sta_config: StaticIp,
+    dhcp_config: DHCPConfig,
+};
+
+pub const AuthModeMask = packed struct(u10) {
+    OPEN: bool,
+    WEP: bool,
+    WPA_PSK: bool,
+    WPA2_PSK: bool,
+    WPA_WPA2_PSK: bool,
+    WPA2_ENTERPRISE: bool,
+    WPA3_PSK: bool,
+    WPA2_WPA3_PSK: bool,
+    WAPI_PSK: bool,
+    OWE: bool,
+};
+
+pub const ScanConfig = struct {
+    rssi_filter: i8 = -100,
+    auth_mode_mask: AuthModeMask = @bitCast(@as(u10, 0x3FF)),
+};
+
+pub const ScanECN = enum {
+    OPEN,
+    WEP,
+    WPA_PSK,
+    WPA2_PSK,
+    WPA_WPA2_PSK,
+    WPA2_ENTERPRISE,
+    WPA3_PSK,
+    WPA2_WPA3_PSK,
+    WAPI_PSK,
+    OWE,
+};
+
+pub const PairwiseCipher = enum {
+    None,
+    WEP40,
+    WEP104,
+    TKIP,
+    CCMP,
+    TKIP_CCMP,
+    AES_CMAC_128,
+    Unknown,
+};
+
+pub const ScanData = struct {
+    ecn: ScanECN,
+    ssid: []const u8,
+    rssid: i8,
+    mac: []const u8,
+    channel: u16,
+    freq_offset: i16,
+    freqcal_val: i16,
+    pair_wise_Cipher: PairwiseCipher,
+    group_cipher: u8,
+    bgn: Protocol,
+    wps: bool,
+};
 
 pub fn get_base_event(event_str: []const u8) !BaseEvent {
     const event = RESPOSE_TOKEN.get(event_str);
@@ -443,11 +512,90 @@ pub fn set_DHCP_config(out_buffer: []u8, config: DHCPConfig) ![]const u8 {
     return out_buffer[0..cmd_size];
 }
 
-pub const Package = union(enum) {
-    AP_conf_pkg: APpkg,
-    STA_conf_pkg: STApkg,
-    reconn: void,
-    static_ap_config: StaticIp,
-    static_sta_config: StaticIp,
-    dhcp_config: DHCPConfig,
-};
+pub fn parser_scan_data(data: []const u8) !ScanData {
+    var scandata: ScanData = undefined;
+    var split_data = std.mem.tokenizeSequence(u8, data[8..], ",");
+    //check ecn
+    if (split_data.next()) |d| {
+        const val = try std.fmt.parseInt(u4, d, 10);
+        if (val > 10) return error.InvalidECN;
+        scandata.ecn = @enumFromInt(val);
+    } else {
+        return error.InvalidECN;
+    }
+    //get SSID
+    if (split_data.next()) |d| {
+        scandata.ssid = d[1..(d.len - 1)];
+    } else {
+        return error.InvalidSSID;
+    }
+
+    //get RSSID
+    if (split_data.next()) |d| {
+        const val = try std.fmt.parseInt(i8, d, 10);
+        scandata.rssid = val;
+    } else {
+        return error.InvalidRSSID;
+    }
+
+    //get mac
+    if (split_data.next()) |d| {
+        scandata.mac = d[1..(d.len - 1)];
+    } else {
+        return error.InvalidMAC;
+    }
+
+    //get channel
+    if (split_data.next()) |d| {
+        const val = try std.fmt.parseInt(u16, d, 10);
+        scandata.channel = val;
+    } else {
+        return error.InvalidChannel;
+    }
+
+    //get freq_offset
+    if (split_data.next()) |d| {
+        const val = try std.fmt.parseInt(i16, d, 10);
+        scandata.freq_offset = val;
+    } else {
+        return error.InvalidFreQ;
+    }
+    //get FraqCalib value
+    if (split_data.next()) |d| {
+        const val = try std.fmt.parseInt(i16, d, 10);
+        scandata.freqcal_val = val;
+    } else {
+        return error.InvalidFreq;
+    }
+
+    //get pair wise value
+    if (split_data.next()) |d| {
+        const val = try std.fmt.parseInt(u8, d, 10);
+        scandata.pair_wise_Cipher = @enumFromInt(val);
+    } else {
+        return error.InvalidPairWise;
+    }
+
+    if (split_data.next()) |d| {
+        const val = try std.fmt.parseInt(u8, d, 10);
+        scandata.group_cipher = val;
+    } else {
+        return error.InvalidPairWise;
+    }
+
+    //get protocol
+    if (split_data.next()) |d| {
+        const val = try std.fmt.parseInt(u4, d, 10);
+        scandata.bgn = @bitCast(val);
+    } else {
+        return error.InvalidProtocol;
+    }
+
+    if (split_data.next()) |d| {
+        scandata.wps = (d[0] == '1');
+    } else {
+        return error.InvalidWPS;
+    }
+
+    return scandata;
+}

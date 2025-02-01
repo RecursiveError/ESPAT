@@ -90,6 +90,7 @@ pub const STAConfig = struct {
     wifi_protocol: ?Protocol = null,
     mac: ?[]const u8 = null,
     wifi_ip: ?WiFiIp = null,
+    host_name: ?[]const u8 = null,
 };
 
 pub const APpkg = struct {
@@ -344,6 +345,11 @@ pub fn check_STA_config(config: STAConfig) !usize {
     if (config.mac) |mac| {
         pkgs += 1;
         if (mac.len != 17) return error.InvalidMac;
+    }
+
+    if (config.host_name) |name| {
+        pkgs += 1;
+        if (name.len > 32) return error.InvalidHostName;
     }
     return pkgs;
 }

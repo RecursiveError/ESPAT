@@ -379,6 +379,17 @@ pub const WiFiDevice = struct {
             }
         }
 
+        if (config.host_name) |name| {
+            const cmd_slice = std.fmt.bufPrint(&pkg.str, "{s}{s}=\"{s}\"{s}", .{
+                prefix,
+                "CWHOSTNAME",
+                name,
+                postfix,
+            }) catch unreachable;
+            pkg.len = cmd_slice.len;
+            self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, pkg), inst) catch unreachable;
+        }
+
         const wpkg = Package{ .STA_conf_pkg = WiFi.STApkg.from_config(config) };
 
         self.runner_loop.store_tx_data(TXPkg.convert_type(.WiFi, wpkg), inst) catch unreachable;

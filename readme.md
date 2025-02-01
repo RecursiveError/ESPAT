@@ -186,6 +186,9 @@ WiFi event table
 |AP_GOT_IP|`[]const u8`|WiFi received an IP from the Access point, returns a string with the IP.|
 |AP_GOT_GATEWAY|`[]const u8`|WiFi received the gateway IP of the Access point, returns a string with the gateway IP.|
 |AP_DISCONNECTED|`void`|WiFi disconnected from an access point.|
+|SCAN_START| `void` | AP scanning started|
+|SCAN_FIND| `ScanData` |an access point was found|
+|SCAN_END| `void` | |AP scanning has finished|
 |STA_CONNECTED|`[]const u8`|A device has connected to the module's access point. returns the MAC address of the device.|
 |STA_GOT_IP|`DeviceInfo`|a device has been assigned an IP address from the module, returns the MAC and IP address of the device.|
 |STA_DISCONNECTED|`[]const u8`| a device disconnected from the module's access point, returns the device's MAC address.|

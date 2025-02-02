@@ -511,7 +511,7 @@ pub const WiFiDevice = struct {
     pub fn link_device(self: *WiFiDevice, runner: anytype) void {
         const info = @typeInfo(@TypeOf(runner));
         switch (info) {
-            .Pointer => |ptr| {
+            .pointer => |ptr| {
                 const child_type = ptr.child;
                 if (@hasField(child_type, "WiFi_device")) {
                     const device = &runner.WiFi_device;

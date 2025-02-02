@@ -520,7 +520,7 @@ pub fn set_DHCP_config(out_buffer: []u8, config: DHCPConfig) ![]const u8 {
 
 pub fn parser_scan_data(data: []const u8) !ScanData {
     var scandata: ScanData = undefined;
-    var split_data = std.mem.tokenizeSequence(u8, data[8..], ",");
+    var split_data = std.mem.splitSequence(u8, data[8..], ",");
     //check ecn
     if (split_data.next()) |d| {
         const val = try std.fmt.parseInt(u4, d, 10);

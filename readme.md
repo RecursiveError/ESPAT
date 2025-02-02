@@ -1,4 +1,7 @@
 # ESPAT
+
+ZIG VERSION: 0.14.0
+
 simple driver made in Zig to use ESP32 boards as WiFi module via AT command firmware
 
 AT command firmware for ESP modules (32/8266) is a simple and inexpensive way to add wireless connection to embedded devices, although it is more limited than conventional RF modules, ESP modules abstract much of the network stack, allowing their use in more limited devices.

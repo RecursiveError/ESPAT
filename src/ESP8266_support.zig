@@ -695,7 +695,7 @@ pub fn NetworkDevice(binds: usize) type {
         pub fn link_device(self: *Self, runner: anytype) void {
             const info = @typeInfo(@TypeOf(runner));
             switch (info) {
-                .Pointer => |ptr| {
+                .pointer => |ptr| {
                     const child_type = ptr.child;
                     if (@hasField(child_type, "tcp_ip")) {
                         const net_device = &runner.tcp_ip;

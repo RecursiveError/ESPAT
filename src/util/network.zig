@@ -227,7 +227,7 @@ pub const IpData = struct {
 
 pub fn paser_ip_data(str: []const u8) !IpData {
     //no check to invalid size, this func is only call when "+IPD," get into the buffer
-    var slices = std.mem.split(u8, str[5..], ",");
+    var slices = std.mem.splitSequence(u8, str[5..], ",");
     const id_str = slices.next();
     const data_str = slices.next();
     const remote_host_str = slices.next();
@@ -264,7 +264,7 @@ pub fn paser_ip_data(str: []const u8) !IpData {
 }
 
 pub fn parse_recv_data(str: []const u8) !IpData {
-    var slices = std.mem.split(u8, str[13..], ",");
+    var slices = std.mem.splitSequence(u8, str[13..], ",");
     const data_str = slices.next();
     const host_str = slices.next();
     const port_str = slices.next();
@@ -289,7 +289,7 @@ pub fn parse_recv_data(str: []const u8) !IpData {
 }
 
 pub fn parser_conn_data(str: []const u8) !RemoteConnInfo {
-    var slices = std.mem.split(u8, str[11..], ",");
+    var slices = std.mem.splitSequence(u8, str[11..], ",");
     //all this skips can be avoid with msg filter but that will reduce the speed a lot
     _ = slices.next(); //skip status
     const id_slice = slices.next();

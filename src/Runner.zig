@@ -70,6 +70,11 @@ pub const UartConfig = struct {
     flowcontrol: FlowControl = .none,
 };
 
+const SendMap = std.StaticStringMap(bool).initComptime(.{
+    .{ "OK\r\n", true },
+    .{ "FAIL\r\n", false },
+});
+
 pub const TXcallback = *const fn (data: []const u8, user_data: ?*anyopaque) void;
 pub const RXcallback = ?*const fn (free_data: usize, user_data: ?*anyopaque) []u8;
 pub const ResponseCallback = ?*const fn (result: ReponseEvent, cmd: Commands, user_data: ?*anyopaque) void;
@@ -89,6 +94,7 @@ pub fn StdRunner(comptime driver_config: Config) type {
             .{ "ERROR", Self.error_response },
             .{ "FAIL", Self.error_response },
             .{ "ERR", Self.parser_error_code },
+            .{ "SEND", Self.send_parser },
         });
 
         //internal control data, (Do not modify)
@@ -228,6 +234,13 @@ pub fn StdRunner(comptime driver_config: Config) type {
             const error_code = Commands_util.parser_error(aux_buffer);
             self.last_error_code = error_code;
             if (error_code == .ESP_AT_UNKNOWN_ERROR) return DriverError.INVALID_RESPONSE;
+        }
+
+        fn send_parser(self: *Self, aux_buffer: []const u8) DriverError!void {
+            const send_event = get_send_event(aux_buffer[5..]) catch return error.INVALID_RESPONSE;
+            if (self.last_device) |device| {
+                device.send_handler(device.device_instance, send_event);
+            }
         }
 
         fn driver_ready(self: *Self, _: []const u8) DriverError!void {
@@ -485,4 +498,12 @@ pub fn StdRunner(comptime driver_config: Config) type {
             return driver;
         }
     };
+}
+
+pub fn get_send_event(str: []const u8) !bool {
+    const event = SendMap.get(str);
+    if (event) |data| {
+        return data;
+    }
+    return error.EventNotFound;
 }

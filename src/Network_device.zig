@@ -51,7 +51,6 @@ pub fn NetworkDevice(binds: usize) type {
         const CMD_CALLBACK_TYPE = *const fn (self: *Self, buffer: []const u8) DriverError!void;
         const cmd_response_map = std.StaticStringMap(CMD_CALLBACK_TYPE).initComptime(.{
             .{ "+LINK_CONN", Self.network_conn_event },
-            .{ "SEND", Self.network_send_event },
             .{ "+IPD", Self.parse_network_data },
             .{ "+CIPRECVDATA", Self.network_read_data },
         });
@@ -63,6 +62,7 @@ pub fn NetworkDevice(binds: usize) type {
             .apply_cmd = apply_cmd,
             .ok_handler = ok_handler,
             .err_handler = err_handler,
+            .send_handler = send_event,
             .deinit = deinit,
         },
 
@@ -179,6 +179,26 @@ pub fn NetworkDevice(binds: usize) type {
             }
             //send stop code on invalid pkgs (yes stop code is '\''0' not '\0')
             return "\\0";
+        }
+
+        fn send_event(device_inst: *anyopaque, send_state: bool) void {
+            var self: *Self = @alignCast(@ptrCast(device_inst));
+            const runner_inst = self.runner_loop.runner_instance;
+            self.runner_loop.set_busy_flag(0, runner_inst);
+
+            if (self.Network_corrent_pkg) |pkg| {
+                const event: Network.SendState = if (send_state) Network.SendState.Ok else Network.SendState.Fail;
+                const corrent_id = pkg.id;
+
+                if (self.Network_binds[corrent_id]) |*bd| {
+                    bd.client.event = .{ .SendData = .{
+                        .data = pkg.data,
+                        .state = event,
+                    } };
+                    bd.notify();
+                }
+            }
+            self.Network_corrent_pkg = null;
         }
 
         fn deinit(inst: *anyopaque) void {
@@ -309,29 +329,6 @@ pub fn NetworkDevice(binds: usize) type {
                 bd.client.remote_host = null;
                 bd.client.remote_port = null;
             }
-        }
-
-        fn network_send_event(self: *Self, aux_buffer: []const u8) DriverError!void {
-            const runner_inst = self.runner_loop.runner_instance;
-            self.runner_loop.set_busy_flag(0, runner_inst);
-            const send_event_slice = get_cmd_slice(aux_buffer[5..], &[_]u8{}, &[_]u8{'\r'});
-            const send_event = Network.get_send_event(send_event_slice) catch return DriverError.INVALID_RESPONSE;
-            if (self.Network_corrent_pkg) |pkg| {
-                const event: Network.SendState = switch (send_event) {
-                    .ok => .Ok,
-                    .fail => .Fail,
-                };
-                const corrent_id = pkg.id;
-
-                if (self.Network_binds[corrent_id]) |*bd| {
-                    bd.client.event = .{ .SendData = .{
-                        .data = pkg.data,
-                        .state = event,
-                    } };
-                    bd.notify();
-                }
-            }
-            self.Network_corrent_pkg = null;
         }
 
         fn parse_network_data(self: *Self, aux_buffer: []const u8) DriverError!void {

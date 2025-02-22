@@ -58,6 +58,7 @@ pub const WiFiDevice = struct {
         .apply_cmd = apply_cmd,
         .ok_handler = ok_handler,
         .err_handler = err_handler,
+        .send_handler = send_event,
         .deinit = deinit,
     },
 
@@ -180,6 +181,9 @@ pub const WiFiDevice = struct {
         }
         self.lastflag = .NONE;
     }
+
+    //WiFI does not have send events
+    fn send_event(_: *anyopaque, _: bool) void {}
 
     fn deinit(device_inst: *anyopaque) void {
         var self: *WiFiDevice = @alignCast(@ptrCast(device_inst));

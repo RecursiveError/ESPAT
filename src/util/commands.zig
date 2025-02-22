@@ -37,6 +37,7 @@ pub const Commands = enum(u8) {
 };
 
 //This is not necessary since the user cannot send commands directly, but useful for debug
+//keep this?
 pub const COMMANDS_TOKENS = [_][]const u8{
     "AT",
     "RST",

@@ -91,5 +91,6 @@ pub const Device = struct {
     check_cmd: *const fn ([]const u8, []const u8, *anyopaque) DriverError!void,
     ok_handler: *const fn (*anyopaque) void,
     err_handler: *const fn (*anyopaque) void,
+    send_handler: *const fn (*anyopaque, bool) void,
     deinit: *const fn (*anyopaque) void,
 };

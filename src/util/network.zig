@@ -105,24 +105,6 @@ pub const PackageType = union(enum) {
     ConnectConfig: ConnectConfig,
 };
 
-pub const SendEvent = enum {
-    ok,
-    fail,
-};
-
-const SendMap = std.StaticStringMap(SendEvent).initComptime(.{
-    .{ "OK", SendEvent.ok },
-    .{ "FAIL", SendEvent.fail },
-});
-
-pub fn get_send_event(str: []const u8) !SendEvent {
-    const event = SendMap.get(str);
-    if (event) |data| {
-        return data;
-    }
-    return error.EventNotFound;
-}
-
 pub fn set_tcp_config(out_buffer: []u8, id: usize, args: ConnectConfig, tcp_conf: TCPConn) ![]u8 {
     var cmd_slice: []const u8 = undefined;
     var cmd_size: usize = 0;

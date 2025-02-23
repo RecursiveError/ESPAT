@@ -1,6 +1,7 @@
 const std = @import("std");
 
 pub const Commands = enum(u8) {
+    //Basic AT
     DUMMY,
     RESET,
     ECHO_OFF,
@@ -9,6 +10,8 @@ pub const Commands = enum(u8) {
     SYSLOG,
     SYSMSG,
     IP_MUX,
+
+    //WiFi
     WIFI_SET_MODE,
     WiFi_SET_DHCP,
     WiFi_CONF_DHCP,
@@ -23,6 +26,8 @@ pub const Commands = enum(u8) {
     WIFI_AP_PROTO,
     WIFI_AP_IP,
     WIFI_AP_MAC,
+
+    //TCP/IP
     NETWORK_CONNECT,
     NETWORK_SEND,
     NETWORK_CLOSE,
@@ -32,8 +37,13 @@ pub const Commands = enum(u8) {
     NETWORK_RECV_MODE,
     NETWORK_RECV,
     NETWORK_MSG_CONFIG,
-    //Extra
+    //HTTP Clint
 
+    HTTPCGET,
+    HTTPCPOST,
+    HTTPCPUT,
+    HTTPURLCFG,
+    HTTPCHEAD,
 };
 
 //This is not necessary since the user cannot send commands directly, but useful for debug
@@ -70,6 +80,11 @@ pub const COMMANDS_TOKENS = [_][]const u8{
     "CIPRECVTYPE",
     "CIPRECVDATA",
     "CIPDINFO",
+    "HTTPCGET",
+    "HTTPCPOST",
+    "HTTPCPUT",
+    "HTTPURLCFG",
+    "HTTPCHEAD",
 };
 
 pub inline fn get_cmd_string(cmd: Commands) []const u8 {

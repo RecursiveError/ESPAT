@@ -29,6 +29,13 @@ pub const Network = struct {
     pub const Device = NetworkRoot.NetworkDevice;
 };
 
+pub const HttpDevice = struct {
+    pub const HttpRoot = @import("HttpClient_device.zig");
+    pub const Method = HttpRoot.Method;
+    pub const Request = HttpRoot.Request;
+    pub const Device = HttpRoot.HttpDevice;
+};
+
 pub const WiFi = struct {
     pub const WiFiRoot = @import("WiFi_device.zig");
 

@@ -134,6 +134,7 @@ pub fn StdRunner(comptime driver_config: Config) type {
 
         tcp_ip: ?*Device = null,
         WiFi_device: ?*Device = null,
+        HTTP_device: ?*Device = null,
 
         fn set_busy_flag(flag: u1, inst: *anyopaque) void {
             var self: *Self = @alignCast(@ptrCast(inst));
@@ -197,7 +198,7 @@ pub fn StdRunner(comptime driver_config: Config) type {
                 try @call(.auto, callback, .{ self, aux_buffer });
                 return;
             }
-            for (&[_]?*Device{ self.tcp_ip, self.WiFi_device }) |device| {
+            for (&[_]?*Device{ self.tcp_ip, self.WiFi_device, self.HTTP_device }) |device| {
                 if (device) |dev| {
                     try dev.check_cmd(response, aux_buffer, dev.device_instance);
                 }
@@ -345,6 +346,14 @@ pub fn StdRunner(comptime driver_config: Config) type {
                     },
                     .WiFi => {
                         if (self.WiFi_device) |dev| {
+                            const to_send = try dev.apply_cmd(cmd, &self.internal_aux_buffer, dev.device_instance);
+                            self.TXcallback_handler(to_send, self.TX_RX_user_data);
+                            self.last_device = dev;
+                            return;
+                        }
+                    },
+                    .HTTP => {
+                        if (self.HTTP_device) |dev| {
                             const to_send = try dev.apply_cmd(cmd, &self.internal_aux_buffer, dev.device_instance);
                             self.TXcallback_handler(to_send, self.TX_RX_user_data);
                             self.last_device = dev;

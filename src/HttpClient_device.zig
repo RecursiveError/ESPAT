@@ -229,7 +229,28 @@ pub const HttpDevice = struct {
         return;
     }
 
-    fn deinit(_: *anyopaque) void {
+    fn deinit(inst: *anyopaque) void {
+        var self: *HttpDevice = @alignCast(@ptrCast(inst));
+
+        const runner_inst = self.runner_loop.runner_instance;
+        const TX_size = self.runner_loop.get_tx_len(runner_inst);
+        for (0..TX_size) |_| {
+            const data = self.runner_loop.get_tx_data(runner_inst).?;
+            switch (data.device) {
+                .HTTP => {
+                    const pkg: *const Package = @alignCast(std.mem.bytesAsValue(Package, &data.buffer));
+                    switch (pkg.*) {
+                        .REQUEST => |req| {
+                            req.handler(.{ .Finish = .Cancel }, req.user_data);
+                        },
+                        else => continue,
+                    }
+                },
+                else => {
+                    self.runner_loop.store_tx_data(data, runner_inst) catch return;
+                },
+            }
+        }
         return;
     }
 
@@ -302,4 +323,8 @@ pub const HttpDevice = struct {
 
         self.runner_loop.store_tx_data(TXPkg.convert_type(.HTTP, pkg), runner_inst) catch unreachable;
     }
+
+    //TODO: Add HTTPCLIENT method for basic requests
+    //pub fn simple_request() void
+
 };

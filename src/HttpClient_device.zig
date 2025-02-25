@@ -1,3 +1,8 @@
+//TODO: Add support to 4.0.0.0 where PUT and POST Return "send OK/" insted "OK/Fail"
+//TODO: Add HTTPCLIENT Command for simple requests
+//TODO: ADD DELETE/HEADER using HTTPCLIENT COMMAND
+//TODO: Add data send on GET using HTTPCLIENT
+
 const std = @import("std");
 
 const Types = @import("Types.zig");
@@ -11,6 +16,13 @@ const TXPkg = Types.TXPkg;
 const PREFIX = commands.prefix;
 const POSTFIX = commands.postfix;
 const get_cmd_string = commands.get_cmd_string;
+
+pub const HTTPError = error{
+    MethodUnsupported,
+    URLTooShort,
+    URLTooLong,
+    DataTooLong,
+};
 
 pub const FinishStatus = enum {
     Ok,
@@ -207,6 +219,10 @@ pub const HttpDevice = struct {
             .Header => {
                 self.runner_loop.set_busy_flag(0, runner_inst);
                 self.header_check = false;
+                self.clear_request();
+            },
+            .URL => {
+                self.clear_request();
             },
             .Data => {
                 if (self.corrent_handler) |callback| {
@@ -215,14 +231,13 @@ pub const HttpDevice = struct {
                     callback(failevent, self.corrent_user_data);
                 }
             },
-            else => {
-                //TODO: clear the corrent HTTP Request pkgs and set event to Fail
-            },
+            else => {},
         }
     }
 
     fn send_event(inst: *anyopaque, _: bool) void {
         var self: *HttpDevice = @alignCast(@ptrCast(inst));
+        std.log.info("----------SEND EVENT-------", .{});
         const runner_inst = self.runner_loop.runner_instance;
         self.to_send = null;
         self.runner_loop.set_busy_flag(0, runner_inst);
@@ -251,7 +266,11 @@ pub const HttpDevice = struct {
                 },
             }
         }
-        return;
+        self.corrent_state = .None;
+        self.corrent_handler = null;
+        self.corrent_user_data = null;
+        self.recv_check = false;
+        self.header_check = false;
     }
 
     fn set_state(self: *HttpDevice, _: []const u8) DriverError!void {
@@ -291,7 +310,8 @@ pub const HttpDevice = struct {
 
     pub fn request(self: *HttpDevice, req: Request) !void {
         const runner_inst = self.runner_loop.runner_instance;
-        //TODO: add error checks
+        if (self.runner_loop.get_tx_free_space(runner_inst) < 4) return DriverError.TX_BUFFER_FULL;
+        try check_request(&req);
 
         var header_clear: commands.Package = .{};
         const clear_slice = std.fmt.bufPrint(&header_clear.str, "{s}{s}=0{s}", .{
@@ -304,8 +324,9 @@ pub const HttpDevice = struct {
 
         self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, header_clear), runner_inst) catch unreachable;
         self.runner_loop.store_tx_data(TXPkg.convert_type(.HTTP, Package{ .URL = req.url }), runner_inst) catch unreachable;
-        self.runner_loop.store_tx_data(TXPkg.convert_type(.HTTP, Package{ .HEADER = req.header }), runner_inst) catch unreachable;
-
+        if (req.header.len > 0) {
+            self.runner_loop.store_tx_data(TXPkg.convert_type(.HTTP, Package{ .HEADER = req.header }), runner_inst) catch unreachable;
+        }
         const method: MethodType = switch (req.method) {
             .GET => MethodType{ .GET = {} },
             .POST => MethodType{ .POST = req.data },
@@ -324,7 +345,50 @@ pub const HttpDevice = struct {
         self.runner_loop.store_tx_data(TXPkg.convert_type(.HTTP, pkg), runner_inst) catch unreachable;
     }
 
+    ///Clear the next HTTP request on the event buffer
+    pub fn clear_request(self: *HttpDevice) void {
+        const runner_inst = self.runner_loop.runner_instance;
+        const TX_size = self.runner_loop.get_tx_len(runner_inst);
+        var end: bool = false;
+        for (0..TX_size) |_| {
+            const data = self.runner_loop.get_tx_data(runner_inst).?;
+            //keep the buffer event order
+            if (!end) {
+                switch (data.device) {
+                    .HTTP => {
+                        const pkg: *const Package = @alignCast(std.mem.bytesAsValue(Package, &data.buffer));
+                        switch (pkg.*) {
+                            .REQUEST => |req| {
+                                req.handler(.{ .Finish = .Cancel }, req.user_data);
+                                end = true;
+                                continue;
+                            },
+                            else => continue,
+                        }
+                    },
+                    else => {},
+                }
+            }
+            self.runner_loop.store_tx_data(data, runner_inst) catch return;
+        }
+    }
+
     //TODO: Add HTTPCLIENT method for basic requests
     //pub fn simple_request() void
-
 };
+
+fn check_request(req: *const Request) HTTPError!void {
+    const url_len = req.url.len;
+
+    if (url_len < 8) {
+        return HTTPError.URLTooShort;
+    } else if (url_len > 8192) {
+        return HTTPError.URLTooLong;
+    }
+
+    switch (req.method) {
+        .DELETE => return HTTPError.MethodUnsupported,
+        .HEADER => return HTTPError.MethodUnsupported,
+        else => {},
+    }
+}

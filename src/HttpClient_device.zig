@@ -1,4 +1,3 @@
-//TODO: Add support to 4.0.0.0 where PUT and POST Return "send OK/" insted "OK/Fail"
 //TODO: Add HTTPCLIENT Command for simple requests
 //TODO: ADD DELETE/HEADER using HTTPCLIENT COMMAND
 //TODO: Add data send on GET using HTTPCLIENT
@@ -237,7 +236,6 @@ pub const HttpDevice = struct {
 
     fn send_event(inst: *anyopaque, _: bool) void {
         var self: *HttpDevice = @alignCast(@ptrCast(inst));
-        std.log.info("----------SEND EVENT-------", .{});
         const runner_inst = self.runner_loop.runner_instance;
         self.to_send = null;
         self.runner_loop.set_busy_flag(0, runner_inst);

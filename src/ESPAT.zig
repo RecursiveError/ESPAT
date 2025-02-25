@@ -34,6 +34,8 @@ pub const HttpDevice = struct {
     pub const Method = HttpRoot.Method;
     pub const Request = HttpRoot.Request;
     pub const Device = HttpRoot.HttpDevice;
+    pub const Status = HttpRoot.ReqStatus;
+    pub const FinishStatus = HttpRoot.FinishStatus;
 };
 
 pub const WiFi = struct {

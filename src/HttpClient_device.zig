@@ -12,11 +12,26 @@ const PREFIX = commands.prefix;
 const POSTFIX = commands.postfix;
 const get_cmd_string = commands.get_cmd_string;
 
+pub const FinishStatus = enum {
+    Ok,
+    Error,
+    Fail,
+    Cancel,
+};
+
+pub const ReqStatus = union(enum) {
+    Data: []const u8,
+    Finish: FinishStatus,
+};
+
+pub const HTTPHandler = *const fn (status: ReqStatus, user_data: ?*anyopaque) void;
+
 pub const Method = enum {
     GET,
     POST,
     PUT,
     DELETE,
+    HEADER,
 };
 
 pub const Request = struct {
@@ -24,18 +39,42 @@ pub const Request = struct {
     url: []const u8,
     header: []const u8,
     data: []const u8,
+    handler: HTTPHandler,
+    user_data: ?*anyopaque = null,
+};
+
+const MethodType = union(enum) {
+    GET: void,
+    POST: []const u8,
+    PUT: []const u8,
+};
+
+const RequestType = struct {
+    handler: HTTPHandler,
+    user_data: ?*anyopaque,
+    method: MethodType,
 };
 
 const Package = union(enum) {
     URL: []const u8,
     HEADER: []const u8,
-    GET: void,
+    REQUEST: RequestType,
+};
+
+const State = enum {
+    None,
+    Header,
+    URL,
+    Data,
 };
 
 pub const HttpDevice = struct {
     const CMD_CALLBACK_TYPE = *const fn (self: *HttpDevice, buffer: []const u8) DriverError!void;
     const cmd_response_map = std.StaticStringMap(CMD_CALLBACK_TYPE).initComptime(.{
         .{ "SET", HttpDevice.set_state },
+        .{ "+HTTPCGET", HttpDevice.get_response },
+        .{ "+HTTPCPOST", HttpDevice.get_response },
+        .{ "+HTTPCPUT", HttpDevice.get_response },
     });
 
     runner_loop: *Runner = undefined,
@@ -50,9 +89,12 @@ pub const HttpDevice = struct {
     },
 
     to_send: ?[]const u8 = null,
-    //header set does not send "SET OK" in full like URL does, instead it sends "OK" twice
-    header_count: u8 = 0,
+    corrent_state: State = .None,
+    //header set does not send "SET OK" like URL does, instead it sends "OK" twice
     header_check: bool = false,
+    recv_check: bool = false,
+    corrent_handler: ?HTTPHandler = null,
+    corrent_user_data: ?*anyopaque = null,
 
     fn pool_data(inst: *anyopaque) DriverError![]const u8 {
         const self: *HttpDevice = @alignCast(@ptrCast(inst));
@@ -76,6 +118,7 @@ pub const HttpDevice = struct {
         const data = std.mem.bytesAsValue(Package, &pkg.buffer);
         switch (data.*) {
             .URL => |url| {
+                self.corrent_state = .URL;
                 self.to_send = url;
                 self.runner_loop.set_busy_flag(1, runner_inst);
                 return std.fmt.bufPrint(out_buffer, "{s}{s}={d}{s}", .{
@@ -86,10 +129,10 @@ pub const HttpDevice = struct {
                 }) catch unreachable;
             },
             .HEADER => |header| {
+                self.corrent_state = .Header;
                 self.to_send = header;
                 self.runner_loop.set_busy_flag(1, runner_inst);
                 self.header_check = true;
-                self.header_count = 1;
                 return std.fmt.bufPrint(out_buffer, "{s}{s}={d}{s}", .{
                     PREFIX,
                     get_cmd_string(.HTTPCHEAD),
@@ -97,12 +140,39 @@ pub const HttpDevice = struct {
                     POSTFIX,
                 }) catch return DriverError.INVALID_ARGS;
             },
-            .GET => {
-                return std.fmt.bufPrint(out_buffer, "{s}{s}=\"\"{s}", .{
-                    PREFIX,
-                    get_cmd_string(.HTTPCGET),
-                    POSTFIX,
-                }) catch return DriverError.INVALID_ARGS;
+            .REQUEST => |req| {
+                self.corrent_state = .Data;
+                self.corrent_handler = req.handler;
+                self.corrent_user_data = req.user_data;
+                switch (req.method) {
+                    .GET => {
+                        return std.fmt.bufPrint(out_buffer, "{s}{s}=\"\"{s}", .{
+                            PREFIX,
+                            get_cmd_string(.HTTPCGET),
+                            POSTFIX,
+                        }) catch return DriverError.INVALID_ARGS;
+                    },
+                    .POST => |post| {
+                        self.to_send = post;
+                        self.runner_loop.set_busy_flag(1, runner_inst);
+                        return std.fmt.bufPrint(out_buffer, "{s}{s}=\"\",{d}{s}", .{
+                            PREFIX,
+                            get_cmd_string(.HTTPCPOST),
+                            post.len,
+                            POSTFIX,
+                        }) catch return DriverError.INVALID_ARGS;
+                    },
+                    .PUT => |put| {
+                        self.to_send = put;
+                        self.runner_loop.set_busy_flag(1, runner_inst);
+                        return std.fmt.bufPrint(out_buffer, "{s}{s}=\"\",{d}{s}", .{
+                            PREFIX,
+                            get_cmd_string(.HTTPCPUT),
+                            put.len,
+                            POSTFIX,
+                        }) catch return DriverError.INVALID_ARGS;
+                    },
+                }
             },
         }
         return DriverError.INVALID_PKG;
@@ -111,12 +181,20 @@ pub const HttpDevice = struct {
     fn ok_handler(inst: *anyopaque) void {
         var self: *HttpDevice = @alignCast(@ptrCast(inst));
         const runner_inst = self.runner_loop.runner_instance;
-        if (self.header_check) {
-            if (self.header_count == 0) {
+        switch (self.corrent_state) {
+            .Header => {
+                if (self.header_check) {
+                    self.header_check = false;
+                    return;
+                }
                 self.runner_loop.set_busy_flag(0, runner_inst);
-                return;
-            }
-            self.header_count -= 1;
+            },
+            .Data => {
+                if (self.corrent_handler) |callback| {
+                    callback(.{ .Finish = .Ok }, self.corrent_user_data);
+                }
+            },
+            else => {},
         }
         return;
     }
@@ -125,14 +203,29 @@ pub const HttpDevice = struct {
         var self: *HttpDevice = @alignCast(@ptrCast(inst));
         const runner_inst = self.runner_loop.runner_instance;
 
-        if (self.header_check) {
-            self.runner_loop.set_busy_flag(0, runner_inst);
-            self.header_count = 0;
-            self.header_check = false;
+        switch (self.corrent_state) {
+            .Header => {
+                self.runner_loop.set_busy_flag(0, runner_inst);
+                self.header_check = false;
+            },
+            .Data => {
+                if (self.corrent_handler) |callback| {
+                    const failevent = if (self.recv_check) ReqStatus{ .Finish = .Error } else ReqStatus{ .Finish = .Fail };
+                    self.recv_check = false;
+                    callback(failevent, self.corrent_user_data);
+                }
+            },
+            else => {
+                //TODO: clear the corrent HTTP Request pkgs and set event to Fail
+            },
         }
     }
 
-    fn send_event(_: *anyopaque, _: bool) void {
+    fn send_event(inst: *anyopaque, _: bool) void {
+        var self: *HttpDevice = @alignCast(@ptrCast(inst));
+        const runner_inst = self.runner_loop.runner_instance;
+        self.to_send = null;
+        self.runner_loop.set_busy_flag(0, runner_inst);
         return;
     }
 
@@ -144,6 +237,35 @@ pub const HttpDevice = struct {
         const runner_inst = self.runner_loop.runner_instance;
         self.to_send = null;
         self.runner_loop.set_busy_flag(0, runner_inst);
+    }
+
+    fn get_response(self: *HttpDevice, buffer: []const u8) DriverError!void {
+        const runner_inst = self.runner_loop.runner_instance;
+        const start_index = std.mem.indexOf(u8, buffer, ",");
+
+        if (start_index) |index| {
+            const data = commands.get_cmd_slice(buffer, ":", ",");
+            const len = std.fmt.parseInt(usize, data[1..], 10) catch return DriverError.INVALID_RESPONSE;
+            const long_request = Types.ToRead{
+                .to_read = len,
+                .data_offset = buffer.len,
+                .start_index = index + 1,
+                .notify = HttpDevice.recive_data,
+                .user_data = self,
+            };
+
+            self.runner_loop.set_long_data(long_request, runner_inst);
+            return;
+        }
+        return DriverError.INVALID_RESPONSE;
+    }
+
+    fn recive_data(data: []const u8, inst: *anyopaque) void {
+        var self: *HttpDevice = @alignCast(@ptrCast(inst));
+        self.recv_check = true;
+        if (self.corrent_handler) |callback| {
+            callback(.{ .Data = data }, self.corrent_user_data);
+        }
     }
 
     pub fn request(self: *HttpDevice, req: Request) !void {
@@ -159,9 +281,25 @@ pub const HttpDevice = struct {
 
         header_clear.len = clear_slice.len;
 
-        self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, header_clear), runner_inst) catch return error.TX_BUFFER_FULL;
-        self.runner_loop.store_tx_data(TXPkg.convert_type(.HTTP, Package{ .URL = req.url }), runner_inst) catch return error.TX_BUFFER_FULL;
-        self.runner_loop.store_tx_data(TXPkg.convert_type(.HTTP, Package{ .HEADER = req.header }), runner_inst) catch return error.TX_BUFFER_FULL;
-        self.runner_loop.store_tx_data(TXPkg.convert_type(.HTTP, Package{ .GET = {} }), runner_inst) catch return error.TX_BUFFER_FULL;
+        self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, header_clear), runner_inst) catch unreachable;
+        self.runner_loop.store_tx_data(TXPkg.convert_type(.HTTP, Package{ .URL = req.url }), runner_inst) catch unreachable;
+        self.runner_loop.store_tx_data(TXPkg.convert_type(.HTTP, Package{ .HEADER = req.header }), runner_inst) catch unreachable;
+
+        const method: MethodType = switch (req.method) {
+            .GET => MethodType{ .GET = {} },
+            .POST => MethodType{ .POST = req.data },
+            .PUT => MethodType{ .PUT = req.data },
+            else => unreachable,
+        };
+
+        const pkg = Package{
+            .REQUEST = .{
+                .handler = req.handler,
+                .user_data = req.user_data,
+                .method = method,
+            },
+        };
+
+        self.runner_loop.store_tx_data(TXPkg.convert_type(.HTTP, pkg), runner_inst) catch unreachable;
     }
 };

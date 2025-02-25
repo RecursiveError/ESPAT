@@ -480,7 +480,7 @@ pub fn StdRunner(comptime driver_config: Config) type {
         }
 
         pub fn deinit_driver(self: *Self) void {
-            for (&[_]?*Device{ self.tcp_ip, self.WiFi_device }) |dev| {
+            for (&[_]?*Device{ self.tcp_ip, self.WiFi_device, self.HTTP_device }) |dev| {
                 if (dev) |inst| {
                     inst.deinit(inst.device_instance);
                 }

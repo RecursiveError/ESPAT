@@ -1,7 +1,3 @@
-//TODO: Add HTTPCLIENT Command for simple requests
-//TODO: ADD DELETE/HEADER using HTTPCLIENT COMMAND
-//TODO: Add data send on GET using HTTPCLIENT
-
 const std = @import("std");
 
 const Types = @import("Types.zig");

@@ -448,6 +448,39 @@ pub const HttpDevice = struct {
         }
         self.runner_loop.store_tx_data(TXPkg.convert_type(.HTTP, Package{ .SMALL = req }), runner_inst) catch unreachable;
     }
+
+    pub fn link_device(self: *HttpDevice, runner: anytype) void {
+        const info = @typeInfo(@TypeOf(runner));
+        switch (info) {
+            .pointer => |ptr| {
+                const child_type = ptr.child;
+                if (@hasField(child_type, "HTTP_device")) {
+                    const HTTP_device = &runner.HTTP_device;
+                    if (@TypeOf(HTTP_device.*) == ?*Device) {
+                        self.device.device_instance = @ptrCast(self);
+                        HTTP_device.* = &self.device;
+                    } else {
+                        @compileError("HTTP_device need to be a Device pointer");
+                    }
+                } else {
+                    @compileError(std.fmt.comptimePrint("type {s} does not have field \"HTTP_device\"", .{@typeName(runner)}));
+                }
+
+                if (@hasField(child_type, "runner_dev")) {
+                    if (@TypeOf(runner.runner_dev) == Runner) {
+                        self.runner_loop = &(runner.*.runner_dev);
+                    } else {
+                        @compileError("runner_dev need to be a Runner type");
+                    }
+                } else {
+                    @compileError(std.fmt.comptimePrint("type {s} does not have field \"runner_dev\"", .{@typeName(runner)}));
+                }
+            },
+            else => {
+                @compileError("\"runner\" need to be a Pointer");
+            },
+        }
+    }
 };
 
 fn check_request(req: *const Request) HTTPError!void {

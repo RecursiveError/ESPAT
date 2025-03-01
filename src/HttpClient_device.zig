@@ -38,11 +38,23 @@ pub const ReqStatus = union(enum) {
 pub const HTTPHandler = *const fn (status: ReqStatus, user_data: ?*anyopaque) void;
 
 pub const Method = enum {
+    HEADER,
     GET,
     POST,
     PUT,
     DELETE,
-    HEADER,
+};
+
+pub const ContentType = enum {
+    @"application/x-www-form-urlencoded",
+    @"application/json",
+    @"multipart/form-data",
+    @"text/xml",
+};
+
+pub const TransportType = enum {
+    TCP,
+    SSL,
 };
 
 pub const Request = struct {
@@ -50,6 +62,17 @@ pub const Request = struct {
     url: []const u8,
     header: []const u8,
     data: []const u8,
+    handler: HTTPHandler,
+    user_data: ?*anyopaque = null,
+};
+
+pub const SimpleRequest = struct {
+    method: Method,
+    url: []const u8,
+    header: []const u8,
+    content: ContentType,
+    data: ?[]const u8 = null,
+    transport: TransportType = .TCP,
     handler: HTTPHandler,
     user_data: ?*anyopaque = null,
 };
@@ -67,9 +90,10 @@ const RequestType = struct {
 };
 
 const Package = union(enum) {
+    SMALL: SimpleRequest,
+    REQUEST: RequestType,
     URL: []const u8,
     HEADER: []const u8,
-    REQUEST: RequestType,
 };
 
 const State = enum {
@@ -86,6 +110,7 @@ pub const HttpDevice = struct {
         .{ "+HTTPCGET", HttpDevice.get_response },
         .{ "+HTTPCPOST", HttpDevice.get_response },
         .{ "+HTTPCPUT", HttpDevice.get_response },
+        .{ "+HTTPCLIENT", HttpDevice.get_response },
     });
 
     runner_loop: *Runner = undefined,
@@ -126,7 +151,7 @@ pub const HttpDevice = struct {
     fn apply_cmd(pkg: TXPkg, out_buffer: []u8, inst: *anyopaque) DriverError![]const u8 {
         var self: *HttpDevice = @alignCast(@ptrCast(inst));
         const runner_inst = self.runner_loop.runner_instance;
-        const data = std.mem.bytesAsValue(Package, &pkg.buffer);
+        const data: *align(1) const Package = std.mem.bytesAsValue(Package, &pkg.buffer);
         switch (data.*) {
             .URL => |url| {
                 self.corrent_state = .URL;
@@ -184,6 +209,36 @@ pub const HttpDevice = struct {
                         }) catch return DriverError.INVALID_ARGS;
                     },
                 }
+            },
+            .SMALL => |req| {
+                const method: usize = @intFromEnum(req.method) + 1;
+                const content: usize = @intFromEnum(req.content);
+                const transport: usize = @as(usize, @intFromEnum(req.transport)) + 1;
+                var end: usize = 0;
+
+                self.corrent_state = .Data;
+                self.corrent_handler = req.handler;
+                self.corrent_user_data = req.user_data;
+
+                var pre = std.fmt.bufPrint(out_buffer, "{s}{s}={d},{d},\"\",,,{d}", .{
+                    PREFIX,
+                    get_cmd_string(.HTTPCLIENT),
+                    method,
+                    content,
+                    transport,
+                }) catch return DriverError.INVALID_ARGS;
+
+                end += pre.len;
+
+                if (req.method == .POST) {
+                    if (req.data) |to_send| {
+                        pre = std.fmt.bufPrint(out_buffer[end..], ",{s}", .{to_send}) catch return DriverError.INVALID_ARGS;
+                        end += pre.len;
+                    }
+                }
+                pre = std.fmt.bufPrint(out_buffer[end..], "{s}", .{POSTFIX}) catch unreachable;
+                end += pre.len;
+                return out_buffer[0..end];
             },
         }
         return DriverError.INVALID_PKG;
@@ -251,9 +306,12 @@ pub const HttpDevice = struct {
             const data = self.runner_loop.get_tx_data(runner_inst).?;
             switch (data.device) {
                 .HTTP => {
-                    const pkg: *const Package = @alignCast(std.mem.bytesAsValue(Package, &data.buffer));
+                    const pkg: *align(1) const Package = @alignCast(std.mem.bytesAsValue(Package, &data.buffer));
                     switch (pkg.*) {
                         .REQUEST => |req| {
+                            req.handler(.{ .Finish = .Cancel }, req.user_data);
+                        },
+                        .SMALL => |req| {
                             req.handler(.{ .Finish = .Cancel }, req.user_data);
                         },
                         else => continue,
@@ -280,7 +338,6 @@ pub const HttpDevice = struct {
     fn get_response(self: *HttpDevice, buffer: []const u8) DriverError!void {
         const runner_inst = self.runner_loop.runner_instance;
         const start_index = std.mem.indexOf(u8, buffer, ",");
-
         if (start_index) |index| {
             const data = commands.get_cmd_slice(buffer, ":", ",");
             const len = std.fmt.parseInt(usize, data[1..], 10) catch return DriverError.INVALID_RESPONSE;
@@ -354,9 +411,14 @@ pub const HttpDevice = struct {
             if (!end) {
                 switch (data.device) {
                     .HTTP => {
-                        const pkg: *const Package = @alignCast(std.mem.bytesAsValue(Package, &data.buffer));
+                        const pkg: *align(1) const Package = @alignCast(std.mem.bytesAsValue(Package, &data.buffer));
                         switch (pkg.*) {
                             .REQUEST => |req| {
+                                req.handler(.{ .Finish = .Cancel }, req.user_data);
+                                end = true;
+                                continue;
+                            },
+                            .SMALL => |req| {
                                 req.handler(.{ .Finish = .Cancel }, req.user_data);
                                 end = true;
                                 continue;
@@ -371,8 +433,25 @@ pub const HttpDevice = struct {
         }
     }
 
-    //TODO: Add HTTPCLIENT method for basic requests
-    //pub fn simple_request() void
+    pub fn simple_request(self: *HttpDevice, req: SimpleRequest) !void {
+        const runner_inst = self.runner_loop.runner_instance;
+        if (self.runner_loop.get_tx_free_space(runner_inst) < 4) return DriverError.TX_BUFFER_FULL;
+        var header_clear: commands.Package = .{};
+        const clear_slice = std.fmt.bufPrint(&header_clear.str, "{s}{s}=0{s}", .{
+            PREFIX,
+            get_cmd_string(.HTTPCHEAD),
+            POSTFIX,
+        }) catch unreachable;
+
+        header_clear.len = clear_slice.len;
+
+        self.runner_loop.store_tx_data(TXPkg.convert_type(.Command, header_clear), runner_inst) catch unreachable;
+        self.runner_loop.store_tx_data(TXPkg.convert_type(.HTTP, Package{ .URL = req.url }), runner_inst) catch unreachable;
+        if (req.header.len > 0) {
+            self.runner_loop.store_tx_data(TXPkg.convert_type(.HTTP, Package{ .HEADER = req.header }), runner_inst) catch unreachable;
+        }
+        self.runner_loop.store_tx_data(TXPkg.convert_type(.HTTP, Package{ .SMALL = req }), runner_inst) catch unreachable;
+    }
 };
 
 fn check_request(req: *const Request) HTTPError!void {

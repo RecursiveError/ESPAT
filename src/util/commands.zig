@@ -44,6 +44,7 @@ pub const Commands = enum(u8) {
     HTTPCPUT,
     HTTPURLCFG,
     HTTPCHEAD,
+    HTTPCLIENT,
 };
 
 //This is not necessary since the user cannot send commands directly, but useful for debug
@@ -85,6 +86,7 @@ pub const COMMANDS_TOKENS = [_][]const u8{
     "HTTPCPUT",
     "HTTPURLCFG",
     "HTTPCHEAD",
+    "HTTPCLIENT",
 };
 
 pub inline fn get_cmd_string(cmd: Commands) []const u8 {

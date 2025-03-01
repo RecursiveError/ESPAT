@@ -432,6 +432,9 @@ pub const HttpDevice = struct {
     pub fn simple_request(self: *HttpDevice, req: SimpleRequest) !void {
         const runner_inst = self.runner_loop.runner_instance;
         if (self.runner_loop.get_tx_free_space(runner_inst) < 4) return DriverError.TX_BUFFER_FULL;
+        if (req.data) |has_data| {
+            if (has_data.len > 230) return HTTPError.DataTooLong;
+        }
         var header_clear: commands.Package = .{};
         const clear_slice = std.fmt.bufPrint(&header_clear.str, "{s}{s}=0{s}", .{
             PREFIX,

@@ -136,6 +136,7 @@ TODO: microzig port  example
 ### Devices
 - [WiFi](docs/WiFi.md)
 - [Network](docs/Network.md)
+- [HTTP CLient](docs/HTTP.md)
 
 
 ### Examples:

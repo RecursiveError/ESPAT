@@ -1,6 +1,7 @@
 .{
-    .name = "ESPAT",
-    .version = "0.1.0",
+    .name = .ESPAT,
+    .fingerprint = 0x66514571c3365f3b,
+    .version = "0.2.1",
     .dependencies = .{},
     .paths = .{
         "build.zig",

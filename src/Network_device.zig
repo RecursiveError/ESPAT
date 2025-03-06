@@ -302,7 +302,7 @@ pub fn NetworkDevice(binds: usize) type {
                     for (0..TX_size) |_| {
                         const data = self.runner_loop.get_tx_data(runner_inst).?;
                         switch (data.device) {
-                            .network_device => {
+                            .Network => {
                                 const net_data = std.mem.bytesAsValue(Package, &data.buffer);
                                 if (id == net_data.descriptor_id) {
                                     switch (net_data.pkg_type) {
@@ -494,7 +494,7 @@ pub fn NetworkDevice(binds: usize) type {
             };
             self.runner_loop.store_tx_data(
                 TXPkg.convert_type(
-                    .network_device,
+                    .Network,
                     pkg,
                 ),
                 runner_inst,
@@ -674,7 +674,7 @@ pub fn NetworkDevice(binds: usize) type {
                 for (0..TX_size) |_| {
                     const data = self.runner_loop.get_tx_data(runner_inst).?;
                     switch (data.device) {
-                        .network_device => {
+                        .Network => {
                             const net_data = std.mem.bytesAsValue(Package, &data.buffer);
                             if (id == net_data.descriptor_id) {
                                 switch (net_data.pkg_type) {

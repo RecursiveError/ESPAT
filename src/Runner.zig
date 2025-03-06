@@ -336,7 +336,7 @@ pub fn StdRunner(comptime driver_config: Config) type {
                         self.TXcallback_handler(to_send, self.TX_RX_user_data);
                         return;
                     },
-                    .network_device => {
+                    .Network => {
                         if (self.network_device) |dev| {
                             const to_send = try dev.apply_cmd(cmd, &self.internal_aux_buffer, dev.device_instance);
                             self.TXcallback_handler(to_send, self.TX_RX_user_data);

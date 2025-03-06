@@ -31,7 +31,7 @@ pub const Devices = enum {
     WiFi,
     Bluethooth,
     BluethoothLE,
-    TCP_IP,
+    Network,
     HTTP,
     MQTT,
     Filesystem,

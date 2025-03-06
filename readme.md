@@ -23,6 +23,7 @@ Boantong AT firmware (AT =< 1.7) is not supported, and Espressif firmware (2.2.0
 - TCP Server
 - Server + Client mode
 - passive and active recv mode (for All sockets)
+- build-in HTTP/HTTPS client
 
 
 

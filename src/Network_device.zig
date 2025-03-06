@@ -302,7 +302,7 @@ pub fn NetworkDevice(binds: usize) type {
                     for (0..TX_size) |_| {
                         const data = self.runner_loop.get_tx_data(runner_inst).?;
                         switch (data.device) {
-                            .TCP_IP => {
+                            .network_device => {
                                 const net_data = std.mem.bytesAsValue(Package, &data.buffer);
                                 if (id == net_data.descriptor_id) {
                                     switch (net_data.pkg_type) {
@@ -446,7 +446,7 @@ pub fn NetworkDevice(binds: usize) type {
                     .pkg_type = .{ .ClosePkg = {} },
                 };
                 self.runner_loop.store_tx_data(
-                    TXPkg.convert_type(.TCP_IP, pkg),
+                    TXPkg.convert_type(.Network, pkg),
                     runner_inst,
                 ) catch return DriverError.TX_BUFFER_FULL;
                 bd.to_send += 1;
@@ -494,7 +494,7 @@ pub fn NetworkDevice(binds: usize) type {
             };
             self.runner_loop.store_tx_data(
                 TXPkg.convert_type(
-                    .TCP_IP,
+                    .network_device,
                     pkg,
                 ),
                 runner_inst,
@@ -508,7 +508,7 @@ pub fn NetworkDevice(binds: usize) type {
             const pkg = Package{ .descriptor_id = id, .pkg_type = .{
                 .AcceptPkg = recv_buffer_size,
             } };
-            self.runner_loop.store_tx_data(TXPkg.convert_type(.TCP_IP, pkg), runner_inst) catch return DriverError.TX_BUFFER_FULL;
+            self.runner_loop.store_tx_data(TXPkg.convert_type(.Network, pkg), runner_inst) catch return DriverError.TX_BUFFER_FULL;
         }
 
         fn accpet_fn(ctx: *anyopaque, id: usize) Network.ClientError!void {
@@ -531,7 +531,7 @@ pub fn NetworkDevice(binds: usize) type {
                         .SendPkg = .{ .data = data },
                     },
                 };
-                self.runner_loop.store_tx_data(TXPkg.convert_type(.TCP_IP, pkg), runner_inst) catch return DriverError.TX_BUFFER_FULL;
+                self.runner_loop.store_tx_data(TXPkg.convert_type(.Network, pkg), runner_inst) catch return DriverError.TX_BUFFER_FULL;
                 bd.to_send += 1;
                 return;
             }
@@ -565,7 +565,7 @@ pub fn NetworkDevice(binds: usize) type {
                         },
                     },
                 };
-                self.runner_loop.store_tx_data(TXPkg.convert_type(.TCP_IP, pkg), runner_inst) catch return DriverError.TX_BUFFER_FULL;
+                self.runner_loop.store_tx_data(TXPkg.convert_type(.Network, pkg), runner_inst) catch return DriverError.TX_BUFFER_FULL;
                 bd.to_send += 1;
                 return;
             }
@@ -674,7 +674,7 @@ pub fn NetworkDevice(binds: usize) type {
                 for (0..TX_size) |_| {
                     const data = self.runner_loop.get_tx_data(runner_inst).?;
                     switch (data.device) {
-                        .TCP_IP => {
+                        .network_device => {
                             const net_data = std.mem.bytesAsValue(Package, &data.buffer);
                             if (id == net_data.descriptor_id) {
                                 switch (net_data.pkg_type) {
@@ -719,8 +719,8 @@ pub fn NetworkDevice(binds: usize) type {
             switch (info) {
                 .pointer => |ptr| {
                     const child_type = ptr.child;
-                    if (@hasField(child_type, "tcp_ip")) {
-                        const net_device = &runner.tcp_ip;
+                    if (@hasField(child_type, "network_device")) {
+                        const net_device = &runner.network_device;
                         if (@TypeOf(net_device.*) == ?*Device) {
                             self.device.device_instance = @ptrCast(self);
                             net_device.* = &self.device;

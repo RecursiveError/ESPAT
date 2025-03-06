@@ -132,7 +132,7 @@ pub fn StdRunner(comptime driver_config: Config) type {
             .get_tx_len = get_tx_len,
         },
 
-        tcp_ip: ?*Device = null,
+        network_device: ?*Device = null,
         WiFi_device: ?*Device = null,
         HTTP_device: ?*Device = null,
 
@@ -198,7 +198,7 @@ pub fn StdRunner(comptime driver_config: Config) type {
                 try @call(.auto, callback, .{ self, aux_buffer });
                 return;
             }
-            for (&[_]?*Device{ self.tcp_ip, self.WiFi_device, self.HTTP_device }) |device| {
+            for (&[_]?*Device{ self.network_device, self.WiFi_device, self.HTTP_device }) |device| {
                 if (device) |dev| {
                     try dev.check_cmd(response, aux_buffer, dev.device_instance);
                 }
@@ -336,8 +336,8 @@ pub fn StdRunner(comptime driver_config: Config) type {
                         self.TXcallback_handler(to_send, self.TX_RX_user_data);
                         return;
                     },
-                    .TCP_IP => {
-                        if (self.tcp_ip) |dev| {
+                    .network_device => {
+                        if (self.network_device) |dev| {
                             const to_send = try dev.apply_cmd(cmd, &self.internal_aux_buffer, dev.device_instance);
                             self.TXcallback_handler(to_send, self.TX_RX_user_data);
                             self.last_device = dev;
@@ -480,7 +480,7 @@ pub fn StdRunner(comptime driver_config: Config) type {
         }
 
         pub fn deinit_driver(self: *Self) void {
-            for (&[_]?*Device{ self.tcp_ip, self.WiFi_device, self.HTTP_device }) |dev| {
+            for (&[_]?*Device{ self.network_device, self.WiFi_device, self.HTTP_device }) |dev| {
                 if (dev) |inst| {
                     inst.deinit(inst.device_instance);
                 }

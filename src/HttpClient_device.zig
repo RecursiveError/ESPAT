@@ -359,6 +359,10 @@ pub const HttpDevice = struct {
         }
     }
 
+    pub fn init() HttpDevice {
+        return HttpDevice{};
+    }
+
     pub fn request(self: *HttpDevice, req: Request) !void {
         const runner_inst = self.runner_loop.runner_instance;
         if (self.runner_loop.get_tx_free_space(runner_inst) < 4) return DriverError.TX_BUFFER_FULL;

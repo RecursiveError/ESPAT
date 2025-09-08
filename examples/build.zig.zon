@@ -1,0 +1,20 @@
+.{
+    .name = .ESP_AT,
+    .fingerprint = 0xb86d02e115ff90be,
+    .version = "0.0.0",
+    .dependencies = .{
+        .serial = .{
+            .url = "git+https://github.com/ZigEmbeddedGroup/serial#9473fc7a29e4f986d02cf08dfe01b0d22293a306",
+            .hash = "serial-0.0.1-PoeRzD61AACY75Xpwn2iX7r3qWKDoYAMP9-4FME2LjDn",
+        },
+        .ESPAT = .{
+            .path = "../",
+        },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

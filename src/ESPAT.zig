@@ -3,6 +3,7 @@
 pub const StandartRunner = struct {
     pub const RunnerRoot = @import("Runner.zig");
     pub const Runner = RunnerRoot.StdRunner;
+    pub const Package = RunnerRoot.CmdPkg;
     pub const Config = RunnerRoot.Config;
     pub const ResponseCallback = RunnerRoot.ResponseCallback;
     pub const TXcallback = RunnerRoot.TXcallback;
@@ -13,12 +14,15 @@ pub const StandartRunner = struct {
 
 pub const Network = struct {
     pub const NetworkRoot = @import("Network_device.zig");
-
+    pub const Package = NetworkRoot.Package;
+    pub const Config = NetworkRoot.Config;
     pub const PackageType = NetworkRoot.PackageType;
     pub const Event = NetworkRoot.Event;
     pub const HandlerState = NetworkRoot.HandlerState;
     pub const ConnectConfig = NetworkRoot.ConnectConfig;
     pub const ServerConfig = NetworkRoot.ServerConfig;
+    pub const mDNSConfig = NetworkRoot.mDNSConfig;
+    pub const TxtREport = NetworkRoot.TxtReport;
     pub const TCPConn = NetworkRoot.TCPConn;
     pub const UDPConn = NetworkRoot.UDPConn;
     pub const HandlerType = NetworkRoot.HandlerType;
@@ -36,11 +40,14 @@ pub const HttpDevice = struct {
     pub const Device = HttpRoot.HttpDevice;
     pub const Status = HttpRoot.ReqStatus;
     pub const FinishStatus = HttpRoot.FinishStatus;
+    pub const Config = HttpRoot.Config;
+    pub const Package = HttpRoot.Package;
 };
 
 pub const WiFi = struct {
     pub const WiFiRoot = @import("WiFi_device.zig");
-
+    pub const WiFiError = WiFiRoot.WiFiError;
+    pub const Package = WiFiRoot.Package;
     pub const APConfig = WiFiRoot.APConfig;
     pub const STAConfig = WiFiRoot.STAConfig;
     pub const Event = WiFiRoot.Event;
@@ -78,20 +85,22 @@ pub const Types = struct {
     pub const Device = TypesRoot.Device;
 };
 
-pub const ESP8266Network = struct {
-    pub const NetworkRoot = @import("ESP8266_support.zig");
-
-    pub const PackageType = NetworkRoot.PackageType;
-    pub const Event = NetworkRoot.Event;
-    pub const HandlerState = NetworkRoot.HandlerState;
-    pub const ConnectConfig = NetworkRoot.ConnectConfig;
-    pub const ServerConfig = NetworkRoot.ServerConfig;
-    pub const TCPConn = NetworkRoot.TCPConn;
-    pub const UDPConn = NetworkRoot.UDPConn;
-    pub const HandlerType = NetworkRoot.HandlerType;
-    pub const Handler = NetworkRoot.Handler;
-    pub const Client = NetworkRoot.Client;
-    pub const ClientCallback = NetworkRoot.ClientCallback;
-    pub const DriveMode = NetworkRoot.DriverMode;
-    pub const Device = NetworkRoot.NetworkDevice;
-};
+//Removed for now
+//pub const ESP8266Network = struct {
+//    pub const NetworkRoot = @import("ESP8266_support.zig");
+//
+//    pub const PackageType = NetworkRoot.PackageType;
+//    pub const Event = NetworkRoot.Event;
+//    pub const HandlerState = NetworkRoot.HandlerState;
+//    pub const ConnectConfig = NetworkRoot.ConnectConfig;
+//    pub const ServerConfig = NetworkRoot.ServerConfig;
+//    pub const TCPConn = NetworkRoot.TCPConn;
+//    pub const UDPConn = NetworkRoot.UDPConn;
+//    pub const HandlerType = NetworkRoot.HandlerType;
+//    pub const Handler = NetworkRoot.Handler;
+//    pub const Client = NetworkRoot.Client;
+//    pub const ClientCallback = NetworkRoot.ClientCallback;
+//    pub const DriveMode = NetworkRoot.DriverMode;
+//    pub const Device = NetworkRoot.NetworkDevice;
+//};
+//

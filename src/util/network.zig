@@ -30,6 +30,7 @@ pub const Event = union(enum) {
     Closed: void,
     DataReport: usize,
     ReadData: []const u8,
+    ReadEnd: void,
     SendData: SendResult,
 };
 
@@ -97,18 +98,43 @@ pub const ServerConfig = struct {
     timeout: ?u16 = null,
 };
 
+pub const TxtReport = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+pub const mDNSConfig = struct {
+    hostname: []const u8,
+    service_type: []const u8,
+    service_port: u16,
+    instance: ?[]const u8 = null,
+    protocol: ?[]const u8 = null,
+    txt_report: ?[]const TxtReport = null,
+};
+
 pub const PackageType = union(enum) {
+    //setup
+    setup: void,
+    link_msg: void,
+    set_mode: void,
+    set_data_mode: RecvMode,
+    //client
     SendPkg: SendPkg,
     SendToPkg: SendToPkg,
     AcceptPkg: usize,
     ClosePkg: void,
     ConnectConfig: ConnectConfig,
+    //server
+    close_server: void,
+    create_server: ServerConfig,
+    config_server: usize,
+
+    //mDNS
+    create_mDNS: mDNSConfig,
 };
 
-pub fn set_tcp_config(out_buffer: []u8, id: usize, args: ConnectConfig, tcp_conf: TCPConn) ![]u8 {
-    var cmd_slice: []const u8 = undefined;
-    var cmd_size: usize = 0;
-    cmd_slice = try std.fmt.bufPrint(out_buffer, "{s}{s}={d},\"TCP\",\"{s}\",{d},{d}", .{
+pub fn set_tcp_config(writer: *std.io.Writer, id: usize, args: ConnectConfig, tcp_conf: TCPConn) !void {
+    try writer.print("{s}{s}={d},\"TCP\",\"{s}\",{d},{d}", .{
         prefix,
         get_cmd_string(.NETWORK_CONNECT),
         id,
@@ -116,31 +142,22 @@ pub fn set_tcp_config(out_buffer: []u8, id: usize, args: ConnectConfig, tcp_conf
         args.remote_port,
         tcp_conf.keep_alive,
     });
-    cmd_size += cmd_slice.len;
 
     if (args.local_ip) |ip| {
-        cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], ",\"{s}\"", .{ip});
-        cmd_size += cmd_slice.len;
+        try writer.print(",\"{s}\"", .{ip});
     } else {
         if (args.timeout != null) {
-            cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], ",", .{});
-            cmd_size += cmd_slice.len;
+            try writer.print(",", .{});
         }
     }
     if (args.timeout) |timeout| {
-        cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], ",{d}", .{timeout});
-        cmd_size += cmd_slice.len;
+        try writer.print(",{d}", .{timeout});
     }
-    cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], "{s}", .{postfix});
-    cmd_size += cmd_slice.len;
-
-    return out_buffer[0..cmd_size];
+    try writer.print("{s}", .{postfix});
 }
 
-pub fn set_udp_config(out_buffer: []u8, id: usize, args: ConnectConfig, udp_conf: UDPConn) ![]u8 {
-    var cmd_slice: []const u8 = undefined;
-    var cmd_size: usize = 0;
-    cmd_slice = try std.fmt.bufPrint(out_buffer, "{s}{s}={d},\"UDP\",\"{s}\",{d},{d},{d}", .{
+pub fn set_udp_config(writer: *std.io.Writer, id: usize, args: ConnectConfig, udp_conf: UDPConn) !void {
+    try writer.print("{s}{s}={d},\"UDP\",\"{s}\",{d},{d},{d}", .{
         prefix,
         get_cmd_string(.NETWORK_CONNECT),
         id,
@@ -149,24 +166,18 @@ pub fn set_udp_config(out_buffer: []u8, id: usize, args: ConnectConfig, udp_conf
         udp_conf.local_port,
         @intFromEnum(udp_conf.mode),
     });
-    cmd_size = cmd_slice.len;
 
     if (args.local_ip) |ip| {
-        cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], ",\"{s}\"", .{ip});
-        cmd_size += cmd_slice.len;
+        try writer.print(",\"{s}\"", .{ip});
     } else {
         if (args.timeout != null) {
-            cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], ",", .{});
-            cmd_size += cmd_slice.len;
+            try writer.print(",", .{});
         }
     }
     if (args.timeout) |timeout| {
-        cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], ",{d}", .{timeout});
-        cmd_size += cmd_slice.len;
+        try writer.print(",{d}", .{timeout});
     }
-    cmd_slice = try std.fmt.bufPrint(out_buffer[cmd_size..], "{s}", .{postfix});
-    cmd_size += cmd_slice.len;
-    return out_buffer[0..cmd_size];
+    try writer.print("{s}", .{postfix});
 }
 
 pub fn check_connect_config(config: ConnectConfig) !void {

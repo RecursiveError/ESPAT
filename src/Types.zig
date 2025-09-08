@@ -3,7 +3,7 @@ const std = @import("std");
 pub const DriverError = error{
     DRIVER_OFF,
     WIFI_OFF,
-    BUSY,
+
     AP_OFF,
     STA_OFF,
     SERVER_DISLABE,
@@ -19,52 +19,36 @@ pub const DriverError = error{
     INVALID_BIND,
     INVALID_NETWORK_TYPE,
     INVALID_ARGS,
-    NON_RECOVERABLE_ERROR,
     INVALID_PKG,
-    NO_POOL_DATA,
+    NO_send_data,
     UNKNOWN_ERROR,
     UNSUPPORTED,
 };
 
-pub const Devices = enum {
-    Basic,
-    WiFi,
-    Bluethooth,
-    BluethoothLE,
-    Network,
-    HTTP,
-    MQTT,
-    Filesystem,
-    WebSocket,
-    Ethernet,
-    WebServer,
-    Driver,
-    User,
-    //extra devices
-    Command,
-    Custom,
+pub const RunnerError = error{
+    BUSY,
+    OFF,
+    INVALID_PKG,
+    INVALID_RESPONSE,
+    NO_DEVICE,
+    TASK_QUEUE_FULL,
+    DEVICE_LIST_FULL,
+    INVALID_ID,
+    NON_RECOVERABLE_ERROR,
 };
 
-pub const TXPkg = struct {
-    device: Devices,
-    buffer: [80]u8,
-
-    pub fn init(dev: Devices, data: []const u8) TXPkg {
-        var buf: [80]u8 = undefined;
-        std.mem.copyForwards(u8, &buf, data);
-        return TXPkg{ .device = dev, .buffer = buf };
-    }
-
-    pub fn convert_type(dev: Devices, t: anytype) TXPkg {
-        if (@sizeOf(@TypeOf(t)) > @sizeOf(TXPkg)) {
-            @compileError(std.fmt.comptimePrint("Type {s} cannot fit in TxPkg", .{@typeName(@TypeOf(t))}));
-        }
-        const data = std.mem.asBytes(&t);
-        return init(dev, data);
-    }
+pub const DeviceError = error{
+    NO_SEND_DATA,
+    UNSUPPORTED,
+    QUEUE_EMPTY,
+    QUEUE_FAIL,
+    QUEUE_FULL,
+    CMD_FAIL,
+    SETUP_FAIL,
+    SEND_FAIL,
+    INVALID_RESPONSE,
+    FATAL_ERROR,
 };
-
-pub const ApplyCallbackType = *const fn (TXPkg, []u8, *anyopaque) ?[]const u8;
 
 pub const ToRead = struct {
     to_read: usize,
@@ -75,22 +59,97 @@ pub const ToRead = struct {
 };
 
 pub const Runner = struct {
-    runner_instance: *anyopaque,
-    set_busy_flag: *const fn (u1, *anyopaque) void,
-    set_long_data: *const fn (ToRead, *anyopaque) void,
-    get_tx_data: *const fn (*anyopaque) ?TXPkg,
-    get_tx_free_space: *const fn (*anyopaque) usize,
-    get_tx_len: *const fn (*anyopaque) usize,
-    store_tx_data: *const fn (TXPkg, *anyopaque) DriverError!void,
+    set_busy_flag_fn: *const fn (*const Runner, bool, u32) RunnerError!void,
+    set_long_data_fn: *const fn (*const Runner, ToRead) void,
+    queue_free_size_fn: *const fn (*const Runner) usize,
+    queue_current_size_fn: *const fn (*const Runner) usize,
+    link_device_fn: *const fn (*const Runner, *const Device) RunnerError!u32,
+    release_device_fn: *const fn (*const Runner, u32) RunnerError!void,
+    queue_fn: *const fn (*const Runner, u32) RunnerError!void,
+    cancel_fn: *const fn (*const Runner, u32, usize) void,
+    take_reader_fn: *const fn (*const Runner) RunnerError!*std.io.Reader,
+
+    pub inline fn set_busy_flag(self: *const Runner, busy: bool, id: u32) RunnerError!void {
+        return self.set_busy_flag_fn(self, busy, id);
+    }
+
+    pub inline fn set_long_data(self: *const Runner, to_read: ToRead) void {
+        self.set_long_data_fn(self, to_read);
+    }
+
+    pub inline fn queue_free_size(self: *const Runner) usize {
+        return self.queue_free_size_fn(self);
+    }
+
+    pub inline fn queue_corrent_size(self: *const Runner) usize {
+        return self.queue_corrent_size_fn(self);
+    }
+
+    pub inline fn link_device(self: *const Runner, device: *const Device) RunnerError!u32 {
+        return self.link_device_fn(self, device);
+    }
+
+    pub inline fn release_device(self: *const Runner, id: u32) RunnerError!void {
+        return self.release_device_fn(self, id);
+    }
+
+    pub inline fn queue(self: *const Runner, id: u32) RunnerError!void {
+        return self.queue_fn(self, id);
+    }
+
+    pub fn queue_multi(self: *const Runner, id: u32, qtd: usize) RunnerError!void {
+        if (self.queue_free_size() < qtd) return RunnerError.TASK_QUEUE_FULL;
+        for (0..qtd) |_| {
+            self.queue(id) catch unreachable;
+        }
+    }
+
+    pub inline fn queue_cancel(self: *const Runner, id: u32, qtd: usize) void {
+        self.cancel_fn(self, id, qtd);
+    }
+
+    pub inline fn take_reader(self: *const Runner) RunnerError!*std.io.Reader {
+        return self.take_reader_fn(self);
+    }
 };
 
 pub const Device = struct {
-    device_instance: *anyopaque = undefined,
-    apply_cmd: *const fn (TXPkg, []u8, *anyopaque) DriverError![]const u8,
-    pool_data: *const fn (*anyopaque) DriverError![]const u8,
-    check_cmd: *const fn ([]const u8, []const u8, *anyopaque) DriverError!void,
-    ok_handler: *const fn (*anyopaque) void,
-    err_handler: *const fn (*anyopaque) void,
-    send_handler: *const fn (*anyopaque, bool) void,
-    deinit: *const fn (*anyopaque) void,
+    get_cmd_fn: *const fn (*const Device, *std.io.Writer) DeviceError!void,
+    check_cmd_fn: *const fn (*const Device, []const u8, []const u8) DeviceError!void,
+
+    send_data_fn: *const fn (*const Device, *std.io.Writer) DeviceError!void,
+
+    ok_handler_fn: *const fn (*const Device) void,
+    err_handler_fn: *const fn (*const Device) void,
+    send_handler_fn: *const fn (*const Device, bool) void,
+
+    reset_fn: *const fn (*const Device) DeviceError!void,
+
+    pub inline fn get_cmd(self: *const Device, writer: *std.io.Writer) DeviceError!void {
+        return self.get_cmd_fn(self, writer);
+    }
+
+    pub inline fn check_cmd(self: *const Device, cmd: []const u8, all: []const u8) DeviceError!void {
+        return self.check_cmd_fn(self, cmd, all);
+    }
+
+    pub inline fn send_data(self: *const Device, writer: *std.io.Writer) DeviceError!void {
+        return self.send_data_fn(self, writer);
+    }
+
+    pub inline fn ok_handler(self: *const Device) void {
+        self.ok_handler_fn(self);
+    }
+
+    pub inline fn err_handler(self: *const Device) void {
+        self.err_handler_fn(self);
+    }
+
+    pub inline fn send_handler(self: *const Device, success: bool) void {
+        self.send_handler_fn(self, success);
+    }
+
+    pub inline fn reset(self: *const Device) DeviceError!void {
+        try self.reset_fn(self);
+    }
 };

@@ -5,12 +5,30 @@ const postfix = Commands.postfix;
 const cmd_enum = Commands.Commands;
 
 pub const WiFiErrors = error{
-    invalidSSID,
-    invalidBSSID,
-    invalidPassword,
-    invalidReconnTime,
-    invalidListenTime,
-    invalidTimeout,
+    InvalidSSID,
+    InvalidBSSID,
+    InvalidRSSID,
+    InvalidPassword,
+    InvalidReconnTime,
+    InvalidListenTime,
+    InvalidTimeout,
+    InvalidProtoConf,
+    InvalidIP,
+    InvalidGateWay,
+    InvalidNetConfig,
+    InvalidLease,
+    InvalidStartIP,
+    InvalidEndIP,
+    InvalidMac,
+    InvalidHostName,
+    InvalidECN,
+    InvalidChannel,
+    InvalidFreQ,
+    InvalidFreq,
+    InvalidPairWise,
+    InvalidProtocol,
+    InvalidWPS,
+    NullMask,
 };
 
 pub const Encryption = enum {
@@ -182,14 +200,44 @@ const RESPOSE_TOKEN = std.StaticStringMap(BaseEvent).initComptime(.{
     .{ "netmask", BaseEvent.AP_GOT_MASK },
 });
 
+pub const WType = enum {
+    STA,
+    AP,
+};
+
+pub const IpConfig = struct {
+    ip: StaticIp,
+    wt: WType,
+};
+
+pub const ProtoConfig = struct {
+    proto: Protocol,
+    wt: WType,
+};
+
+pub const MacConfig = struct {
+    mac: []const u8,
+    wt: WType,
+};
+
 pub const Package = union(enum) {
+    init_wifi: void,
+    disable_auto_reconn: void,
+    set_mode: void,
     scan: void,
+    scan_config: ScanConfig,
+    dhcp: void,
+    proto_config: ProtoConfig,
+    get_ip: void,
     AP_conf_pkg: APpkg,
     STA_conf_pkg: STApkg,
     reconn: void,
-    static_ap_config: StaticIp,
-    static_sta_config: StaticIp,
+    static_ip_config: IpConfig,
     dhcp_config: DHCPConfig,
+    mac: MacConfig,
+    host_name: []const u8,
+    disconnect: void,
+    disconnect_device: []const u8,
 };
 
 pub const AuthModeMask = packed struct(u10) {
@@ -205,11 +253,6 @@ pub const AuthModeMask = packed struct(u10) {
     OWE: bool,
 };
 
-pub const ScanConfig = struct {
-    rssi_filter: i8 = -100,
-    auth_mode_mask: AuthModeMask = @bitCast(@as(u10, 0x3FF)),
-};
-
 pub const ScanECN = enum {
     OPEN,
     WEP,
@@ -221,6 +264,11 @@ pub const ScanECN = enum {
     WPA2_WPA3_PSK,
     WAPI_PSK,
     OWE,
+};
+
+pub const ScanConfig = struct {
+    rssi_filter: i8 = -100,
+    auth_mode_mask: AuthModeMask = @bitCast(@as(u10, 0x3FF)),
 };
 
 pub const PairwiseCipher = enum {
@@ -263,70 +311,69 @@ pub fn get_error_event(event_str: []const u8) EventError {
 }
 
 //https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/wifi.html#wi-fi-protocol-mode
-pub fn check_protocol(proto: Protocol) !void {
+pub fn check_protocol(proto: Protocol) WiFiErrors!void {
     const value: u4 = @bitCast(proto);
 
     //check for BG
-    if (value == 0b0101) return error.InvalidProtoConf;
+    if (value == 0b0101) return WiFiErrors.InvalidProtoConf;
     //1000
-    //0b1xxx invalid proto
+    //0b1xxx Invalid proto
     //1111
     if ((value & 0b1000) != 0) {
-        if ((value != 0b1000) or (value != 0b1111)) return error.InvalidProtoConf;
+        if ((value != 0b1000) or (value != 0b1111)) return WiFiErrors.InvalidProtoConf;
     }
 }
-pub fn check_static_ip(ip: StaticIp) !void {
+pub fn check_static_ip(ip: StaticIp) WiFiErrors!void {
     const ip_len = ip.ip.len;
-    if ((ip_len > 15) or (ip_len < 7)) return error.InvalidIP;
-
+    if ((ip_len > 15) or (ip_len < 7)) return WiFiErrors.InvalidIP;
     if (!std.net.isValidHostName(ip.ip)) {
-        return error.InvalidIP;
+        return WiFiErrors.InvalidIP;
     }
 
     if (ip.gateway) |gateway| {
         if (ip.mask) |mask| {
             const mask_len = mask.len;
-            if ((mask_len > 15) or (mask_len < 7)) return error.InvalidGateWay;
+            if ((mask_len > 15) or (mask_len < 7)) return WiFiErrors.InvalidGateWay;
             const gate_len = gateway.len;
-            if ((gate_len > 15) or (gate_len < 7)) return error.InvalidGateWay;
+            if ((gate_len > 15) or (gate_len < 7)) return WiFiErrors.InvalidGateWay;
             if (!std.net.isValidHostName(gateway) or !std.net.isValidHostName(mask)) {
-                return error.InvalidNetConfig;
+                return WiFiErrors.InvalidNetConfig;
             }
         } else {
             //If the gateway is denified, mask is mandatory
-            return error.NullMask;
+            return WiFiErrors.NullMask;
         }
     }
 }
 
-fn check_DHCP_config(dhcp: DHCPConfig) !void {
+fn check_DHCP_config(dhcp: DHCPConfig) WiFiErrors!void {
     const lease = dhcp.lease;
     const st_len = dhcp.start_ip.len;
     const en_len = dhcp.end_ip.len;
 
-    if ((lease < 1) or (lease > 2880)) return error.InvalidLease;
-    if ((st_len > 15) or (st_len < 7)) return error.InvalidStartIP;
-    if ((en_len > 15) or (en_len < 7)) return error.InvalidEndIP;
+    if ((lease < 1) or (lease > 2880)) return WiFiErrors.InvalidLease;
+    if ((st_len > 15) or (st_len < 7)) return WiFiErrors.InvalidStartIP;
+    if ((en_len > 15) or (en_len < 7)) return WiFiErrors.InvalidEndIP;
 }
 
 //TODO create a real IP and mac verify
-pub fn check_STA_config(config: STAConfig) !usize {
+pub fn check_STA_config(config: STAConfig) WiFiErrors!usize {
     var pkgs: usize = 1;
     const ssid_len = config.ssid.len;
-    if ((ssid_len < 1) or (ssid_len > 32)) return WiFiErrors.invalidSSID;
+    if ((ssid_len < 1) or (ssid_len > 32)) return WiFiErrors.InvalidSSID;
 
     if (config.pwd) |pwd| {
         const pwd_len = pwd.len;
-        if ((pwd_len < 8) or (pwd_len > 60)) return WiFiErrors.invalidPassword;
+        if ((pwd_len < 8) or (pwd_len > 60)) return WiFiErrors.InvalidPassword;
     }
 
     if (config.bssid) |bssid| {
-        if (bssid.len < 17) return WiFiErrors.invalidBSSID;
+        if (bssid.len < 17) return WiFiErrors.InvalidBSSID;
     }
 
-    if (config.reconn_interval > 7200) return WiFiErrors.invalidReconnTime;
-    if (config.listen_interval > 100) return WiFiErrors.invalidListenTime;
-    if (config.jap_timeout > 600) return WiFiErrors.invalidTimeout;
+    if (config.reconn_interval > 7200) return WiFiErrors.InvalidReconnTime;
+    if (config.listen_interval > 100) return WiFiErrors.InvalidListenTime;
+    if (config.jap_timeout > 600) return WiFiErrors.InvalidTimeout;
 
     if (config.wifi_protocol) |proto| {
         pkgs += 1;
@@ -344,12 +391,12 @@ pub fn check_STA_config(config: STAConfig) !usize {
 
     if (config.mac) |mac| {
         pkgs += 1;
-        if (mac.len != 17) return error.InvalidMac;
+        if (mac.len != 17) return WiFiErrors.InvalidMac;
     }
 
     if (config.host_name) |name| {
         pkgs += 1;
-        if (name.len > 32) return error.InvalidHostName;
+        if (name.len > 32) return WiFiErrors.InvalidHostName;
     }
     return pkgs;
 }
@@ -358,15 +405,15 @@ pub fn check_STA_config(config: STAConfig) !usize {
 pub fn check_AP_config(config: APConfig) !usize {
     var pkgs: usize = 1;
     const ssid_len = config.ssid.len;
-    if ((ssid_len < 1) or (ssid_len > 32)) return WiFiErrors.invalidSSID;
+    if ((ssid_len < 1) or (ssid_len > 32)) return WiFiErrors.InvalidSSID;
 
     //WiFi is not OPEN, PASSWORD can't be null (pwd has no effect if ECN is OPEN)
     if (config.ecn != .OPEN) {
         if (config.pwd) |pwd| {
             const pwd_len = pwd.len;
-            if ((pwd_len < 8) or (pwd_len > 60)) return WiFiErrors.invalidPassword;
+            if ((pwd_len < 8) or (pwd_len > 60)) return WiFiErrors.InvalidPassword;
         } else {
-            return WiFiErrors.invalidPassword;
+            return WiFiErrors.InvalidPassword;
         }
     }
 
@@ -392,69 +439,53 @@ pub fn check_AP_config(config: APConfig) !usize {
 
     if (config.mac) |mac| {
         pkgs += 1;
-        if (mac.len != 17) return error.InvalidMac;
+        if (mac.len != 17) return WiFiErrors.InvalidMac;
     }
     return pkgs;
 }
 
-pub fn set_AP_config(out_buffer: []u8, config: APpkg) ![]const u8 {
-    if (out_buffer.len < 200) return error.BufferTooSmall;
-    var cmd_slice: []u8 = undefined;
-    var cmd_size: usize = 0;
-    cmd_slice = std.fmt.bufPrint(out_buffer, "{s}{s}=\"{s}\",", .{
+pub fn set_AP_config(config: APpkg, writer: *std.io.Writer) void {
+    writer.print("{s}{s}=\"{s}\",", .{
         prefix,
         Commands.get_cmd_string(.WIFI_CONF),
         config.ssid,
     }) catch unreachable;
-    cmd_size += cmd_slice.len;
+
     if (config.pwd) |pwd| {
-        cmd_slice = std.fmt.bufPrint(out_buffer[cmd_size..], "\"{s}\",", .{pwd}) catch unreachable;
-        cmd_size += cmd_slice.len;
+        writer.print("\"{s}\",", .{pwd}) catch unreachable;
     } else {
-        cmd_slice = std.fmt.bufPrint(out_buffer[cmd_size..], ",", .{}) catch unreachable;
-        cmd_size += cmd_slice.len;
+        writer.print(",", .{}) catch unreachable;
     }
 
-    cmd_slice = std.fmt.bufPrint(out_buffer[cmd_size..], "{d},{d}", .{
+    writer.print("{d},{d}", .{
         config.channel,
         @intFromEnum(config.ecn),
     }) catch unreachable;
-    cmd_size += cmd_slice.len;
-    cmd_slice = std.fmt.bufPrint(out_buffer[cmd_size..], ",{d},{d}", .{
+
+    writer.print(",{d},{d}", .{
         config.max_conn,
         config.hidden_ssid,
     }) catch unreachable;
-    cmd_size += cmd_slice.len;
-    cmd_slice = std.fmt.bufPrint(out_buffer[cmd_size..], "{s}", .{postfix}) catch unreachable;
-    cmd_size += cmd_slice.len;
-    return out_buffer[0..cmd_size];
+    writer.print("{s}", .{postfix}) catch unreachable;
 }
 
-pub fn set_STA_config(out_buffer: []u8, config: STApkg) ![]const u8 {
-    if (out_buffer.len < 200) return error.BufferTooSmall;
-    var cmd_slice: []u8 = undefined;
-    var cmd_size: usize = 0;
-    cmd_slice = std.fmt.bufPrint(out_buffer, "{s}{s}=\"{s}\",", .{
+pub fn set_STA_config(writer: *std.io.Writer, config: STApkg) void {
+    writer.print("{s}{s}=\"{s}\",", .{
         prefix,
         Commands.get_cmd_string(.WIFI_CONNECT),
         config.ssid,
     }) catch unreachable;
-    cmd_size += cmd_slice.len;
     if (config.pwd) |pwd| {
-        cmd_slice = std.fmt.bufPrint(out_buffer[cmd_size..], "\"{s}\",", .{pwd}) catch unreachable;
-        cmd_size += cmd_slice.len;
+        writer.print("\"{s}\",", .{pwd}) catch unreachable;
     } else {
-        cmd_slice = std.fmt.bufPrint(out_buffer[cmd_size..], ",", .{}) catch unreachable;
-        cmd_size += cmd_slice.len;
+        writer.print(",", .{}) catch unreachable;
     }
     if (config.bssid) |bssid| {
-        cmd_slice = std.fmt.bufPrint(out_buffer[cmd_size..], "\"{s}\",", .{bssid}) catch unreachable;
-        cmd_size += cmd_slice.len;
+        writer.print("\"{s}\",", .{bssid}) catch unreachable;
     } else {
-        cmd_slice = std.fmt.bufPrint(out_buffer[cmd_size..], ",", .{}) catch unreachable;
-        cmd_size += cmd_slice.len;
+        writer.print(",", .{}) catch unreachable;
     }
-    cmd_slice = std.fmt.bufPrint(out_buffer[cmd_size..], "{d},{d},{d},{d},{d},{d}", .{
+    writer.print("{d},{d},{d},{d},{d},{d}", .{
         config.pci_en,
         config.reconn_interval,
         config.listen_interval,
@@ -462,51 +493,35 @@ pub fn set_STA_config(out_buffer: []u8, config: STApkg) ![]const u8 {
         config.jap_timeout,
         config.pmf,
     }) catch unreachable;
-    cmd_size += cmd_slice.len;
-    cmd_slice = std.fmt.bufPrint(out_buffer[cmd_size..], "{s}", .{postfix}) catch unreachable;
-    cmd_size += cmd_slice.len;
-    return out_buffer[0..cmd_size];
+    writer.print("{s}", .{postfix}) catch unreachable;
 }
 
-pub fn set_mac(out_buffer: []u8, cmd: cmd_enum, mac: []const u8) ![]const u8 {
-    if (out_buffer.len < 50) return error.BufferTooSmall;
-    var cmd_slice: []u8 = undefined;
-    var cmd_size: usize = 0;
-    cmd_slice = std.fmt.bufPrint(out_buffer, "{s}{s}=\"{s}\"{s}", .{
+pub fn set_mac(writer: *std.io.Writer, mac: []const u8, cmd: Commands.Commands) void {
+    writer.print("{s}{s}=\"{s}\"{s}", .{
         prefix,
         Commands.get_cmd_string(cmd),
         mac,
         postfix,
     }) catch unreachable;
-    cmd_size += cmd_slice.len;
-    return out_buffer[0..cmd_size];
 }
 
-pub fn set_static_ip(out_buffer: []u8, cmd: cmd_enum, static_ip: StaticIp) ![]const u8 {
-    if (out_buffer.len < 50) return error.BufferTooSmall;
-    var cmd_slice: []u8 = undefined;
-    var cmd_size: usize = 0;
-    cmd_slice = std.fmt.bufPrint(out_buffer, "{s}{s}=\"{s}\"", .{
+pub fn set_static_ip(writer: *std.io.Writer, cmd: cmd_enum, static_ip: StaticIp) void {
+    writer.print("{s}{s}=\"{s}\"", .{
         prefix,
         Commands.get_cmd_string(cmd),
         static_ip.ip,
     }) catch unreachable;
-    cmd_size += cmd_slice.len;
 
     if (static_ip.gateway) |gataway| {
         if (static_ip.mask) |mask| {
-            cmd_slice = std.fmt.bufPrint(out_buffer[cmd_size..], ",\"{s}\",\"{s}\"", .{ gataway, mask }) catch unreachable;
-            cmd_size += cmd_slice.len;
+            writer.print(",\"{s}\",\"{s}\"", .{ gataway, mask }) catch unreachable;
         }
     }
-    cmd_slice = std.fmt.bufPrint(out_buffer[cmd_size..], "{s}", .{postfix}) catch unreachable;
-    cmd_size += cmd_slice.len;
-    return out_buffer[0..cmd_size];
+    writer.print("{s}", .{postfix}) catch unreachable;
 }
 
-pub fn set_DHCP_config(out_buffer: []u8, config: DHCPConfig) ![]const u8 {
-    if (out_buffer.len < 100) return error.BufferTooSmall;
-    const cmd_slice = std.fmt.bufPrint(out_buffer, "{s}{s}=1,{d},\"{s}\",\"{s}\"{s}", .{
+pub fn set_DHCP_config(writer: *std.io.Writer, config: DHCPConfig) void {
+    writer.print("{s}{s}=1,{d},\"{s}\",\"{s}\"{s}", .{
         prefix,
         Commands.get_cmd_string(.WiFi_CONF_DHCP),
         config.lease,
@@ -514,93 +529,91 @@ pub fn set_DHCP_config(out_buffer: []u8, config: DHCPConfig) ![]const u8 {
         config.end_ip,
         postfix,
     }) catch unreachable;
-    const cmd_size = cmd_slice.len;
-    return out_buffer[0..cmd_size];
 }
 
-pub fn parser_scan_data(data: []const u8) !ScanData {
+pub fn parser_scan_data(data: []const u8) WiFiErrors!ScanData {
     var scandata: ScanData = undefined;
     var split_data = std.mem.splitSequence(u8, data[8..], ",");
     //check ecn
     if (split_data.next()) |d| {
-        const val = try std.fmt.parseInt(u4, d, 10);
-        if (val > 10) return error.InvalidECN;
+        const val = std.fmt.parseInt(u4, d, 10) catch return WiFiErrors.InvalidECN;
+        if (val > 10) return WiFiErrors.InvalidECN;
         scandata.ecn = @enumFromInt(val);
     } else {
-        return error.InvalidECN;
+        return WiFiErrors.InvalidECN;
     }
     //get SSID
     if (split_data.next()) |d| {
         scandata.ssid = d[1..(d.len - 1)];
     } else {
-        return error.InvalidSSID;
+        return WiFiErrors.InvalidSSID;
     }
 
     //get RSSID
     if (split_data.next()) |d| {
-        const val = try std.fmt.parseInt(i8, d, 10);
+        const val = std.fmt.parseInt(i8, d, 10) catch return WiFiErrors.InvalidRSSID;
         scandata.rssid = val;
     } else {
-        return error.InvalidRSSID;
+        return WiFiErrors.InvalidRSSID;
     }
 
     //get mac
     if (split_data.next()) |d| {
         scandata.mac = d[1..(d.len - 1)];
     } else {
-        return error.InvalidMAC;
+        return WiFiErrors.InvalidMac;
     }
 
     //get channel
     if (split_data.next()) |d| {
-        const val = try std.fmt.parseInt(u16, d, 10);
+        const val = std.fmt.parseInt(u16, d, 10) catch return WiFiErrors.InvalidChannel;
         scandata.channel = val;
     } else {
-        return error.InvalidChannel;
+        return WiFiErrors.InvalidChannel;
     }
 
     //get freq_offset
     if (split_data.next()) |d| {
-        const val = try std.fmt.parseInt(i16, d, 10);
+        const val = std.fmt.parseInt(i16, d, 10) catch return WiFiErrors.InvalidFreQ;
         scandata.freq_offset = val;
     } else {
-        return error.InvalidFreQ;
+        return WiFiErrors.InvalidFreQ;
     }
     //get FraqCalib value
     if (split_data.next()) |d| {
-        const val = try std.fmt.parseInt(i16, d, 10);
+        const val = std.fmt.parseInt(i16, d, 10) catch return WiFiErrors.InvalidFreq;
         scandata.freqcal_val = val;
     } else {
-        return error.InvalidFreq;
+        return WiFiErrors.InvalidFreq;
     }
 
     //get pair wise value
     if (split_data.next()) |d| {
-        const val = try std.fmt.parseInt(u8, d, 10);
+        const val = std.fmt.parseInt(u8, d, 10) catch return WiFiErrors.InvalidPairWise;
         scandata.pair_wise_Cipher = @enumFromInt(val);
     } else {
-        return error.InvalidPairWise;
+        return WiFiErrors.InvalidPairWise;
     }
 
     if (split_data.next()) |d| {
-        const val = try std.fmt.parseInt(u8, d, 10);
+        const val = std.fmt.parseInt(u8, d, 10) catch return WiFiErrors.InvalidPairWise;
         scandata.group_cipher = val;
     } else {
-        return error.InvalidPairWise;
+        return WiFiErrors.InvalidPairWise;
     }
 
     //get protocol
     if (split_data.next()) |d| {
-        const val = try std.fmt.parseInt(u4, d, 10);
+        const val = std.fmt.parseInt(u4, d, 10) catch return WiFiErrors.InvalidProtocol;
         scandata.bgn = @bitCast(val);
     } else {
-        return error.InvalidProtocol;
+        return WiFiErrors.InvalidProtocol;
     }
 
     if (split_data.next()) |d| {
         scandata.wps = (d[0] == '1');
     } else {
-        return error.InvalidWPS;
+        return WiFiErrors.InvalidWPS;
     }
 
     return scandata;

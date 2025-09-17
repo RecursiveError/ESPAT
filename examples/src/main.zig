@@ -197,6 +197,16 @@ fn reset(_: ?*anyopaque) void {
     std.log.info("in reset", .{});
 }
 
+fn mdns_handler(event: Network.mDNSEvent, _: ?*anyopaque) void {
+    switch (event) {
+        .instance => |inst| std.log.info("mDNS got service {s}", .{inst}),
+        .service => |srv| std.log.info("mDNS service: {s}:{d}", .{ srv.hostname, srv.port }),
+        .ipv4, .ipv6 => |ip| std.log.info("mDNS got IP: {s}", .{ip}),
+        .txt_param => |param| std.log.info("mDNS got param: {s}:{s}", .{ param.key, param.value }),
+        else => std.log.info("mDNS got event {any}", .{event}),
+    }
+}
+
 pub fn main() !void {
     const port_name = "/dev/ttyUSB0";
     var serial = std.fs.cwd().openFile(port_name, .{ .mode = .read_write }) catch |err| switch (err) {
@@ -267,6 +277,12 @@ pub fn main() !void {
     try wifi.WiFi_config_AP(AP_config);
 
     try tcpip.create_mDNS(config_mDNS);
+    try tcpip.mDNS_query(.{ .handler = mdns_handler, .user_data = null, .type = .{
+        .PTR = .{
+            .protocol = "_tcp",
+            .service = "_my_printer",
+        },
+    } });
     try tcpip.create_server(server_config);
     const tcp_id = try tcpip.bind(tcp_callback, null);
     const udp_id = try tcpip.bind(udp_callback, null);

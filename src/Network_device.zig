@@ -23,6 +23,9 @@ pub const HandlerState = Network.HandlerState;
 pub const ConnectConfig = Network.ConnectConfig;
 pub const ServerConfig = Network.ServerConfig;
 pub const mDNSConfig = Network.mDNSConfig;
+pub const mDNSEvent = Network.mDNSEvent;
+pub const mDNSQuery = Network.mDNSQuery;
+pub const mDNSQueryInterface = Network.mDNSQueryInterface;
 pub const TxtReport = Network.TxtReport;
 pub const TCPConn = Network.TCPConn;
 pub const UDPConn = Network.UDPConn;
@@ -70,11 +73,14 @@ pub fn NetworkDevice(binds: usize) type {
     return struct {
         const Self = @This();
         const CMD_CALLBACK_TYPE = *const fn (self: *Self, buffer: []const u8) DeviceError!void;
-        const cmd_response_map = std.StaticStringMap(CMD_CALLBACK_TYPE).initComptime(.{
-            .{ "+LINK_CONN", Self.network_conn_event },
-            .{ "+IPD", Self.parse_network_data },
-            .{ "+CIPRECVDATA", Self.network_read_data },
-        });
+        const cmd_response_map = std.StaticStringMap(CMD_CALLBACK_TYPE).initComptime(
+            .{
+                .{ "+LINK_CONN", Self.network_conn_event },
+                .{ "+IPD", Self.parse_network_data },
+                .{ "+CIPRECVDATA", Self.network_read_data },
+                .{ "+MDNS", Self.mdns_read_data },
+            },
+        );
 
         runner_dev: *const Runner,
         id: u32 = std.math.maxInt(u32),
@@ -98,6 +104,11 @@ pub fn NetworkDevice(binds: usize) type {
         div_binds: usize,
         network_mode: DriverMode = .CLIENT_ONLY,
 
+        //MDNS data
+        mdns_handler: ?*const fn (Network.mDNSEvent, ?*anyopaque) void = null,
+        mdns_userdata: ?*anyopaque = null,
+        have_data: bool = false,
+
         //device functions
         fn check_cmd(device: *const Device, cmd: []const u8, all: []const u8) DeviceError!void {
             const self: *Self = @alignCast(@constCast(@fieldParentPtr("device", device)));
@@ -112,7 +123,14 @@ pub fn NetworkDevice(binds: usize) type {
             }
         }
 
-        fn ok_handler(_: *const Device) void {
+        fn ok_handler(device: *const Device) void {
+            const self: *Self = @alignCast(@constCast(@fieldParentPtr("device", device)));
+            if (self.mdns_handler) |mdns| {
+                const pkg = if (self.have_data) mDNSEvent{ .query_end = {} } else mDNSEvent{ .no_results = {} };
+                mdns(pkg, self.mdns_userdata);
+                self.mdns_handler = null;
+                self.mdns_userdata = null;
+            }
             return;
         }
 
@@ -228,6 +246,11 @@ pub fn NetworkDevice(binds: usize) type {
                 },
                 .create_mDNS => |mDNS| {
                     apply_create_mdns(writer, mDNS);
+                },
+                .query_mDNS => |query| {
+                    self.mdns_handler = query.handler;
+                    self.mdns_userdata = query.user_data;
+                    Network.set_mdns_query(query, writer);
                 },
             }
             writer.flush() catch unreachable;
@@ -527,6 +550,68 @@ pub fn NetworkDevice(binds: usize) type {
             return DeviceError.INVALID_RESPONSE;
         }
 
+        fn mdns_read_data(self: *Self, aux_buffer: []const u8) DeviceError!void {
+            self.have_data = true;
+            if (self.mdns_handler) |mdns| {
+                errdefer self.mdns_error();
+                const len_s = Commands_util.get_cmd_slice(aux_buffer[6..], "", ",");
+                const reader = self.runner_dev.take_reader() catch return DeviceError.CMD_FAIL;
+                var len = std.fmt.parseInt(usize, len_s, 10) catch return DeviceError.CMD_FAIL;
+                reader.readSliceAll(self.tcp_buf[0..12]) catch return DeviceError.INVALID_RESPONSE;
+
+                //IF and IP have a fixed layout on +MDNS response
+                const interface = if (std.ascii.isDigit(self.tcp_buf[3])) self.tcp_buf[3] - '0' else return DeviceError.INVALID_RESPONSE;
+                const ip_type = if (std.ascii.isDigit(self.tcp_buf[9])) self.tcp_buf[9] - '0' else return DeviceError.INVALID_RESPONSE;
+                len -= 12;
+                mdns(.{
+                    .new_query = .{
+                        .interface = @enumFromInt(interface),
+                        .ip_type = @enumFromInt(ip_type),
+                    },
+                }, self.mdns_userdata);
+
+                while (len != 0) {
+                    const next_pkg = reader.takeDelimiterExclusive('\n') catch return DeviceError.INVALID_RESPONSE;
+                    len -= next_pkg.len + 1;
+                    var tokens = std.mem.splitAny(u8, next_pkg, "=\r");
+                    const recv_t = Network.mDNSRecvType.get(tokens.next().?) orelse return DeviceError.INVALID_RESPONSE;
+
+                    const data = tokens.next() orelse return DeviceError.INVALID_RESPONSE;
+
+                    switch (recv_t) {
+                        .PTR => {
+                            mdns(.{ .instance = data }, self.mdns_userdata);
+                        },
+                        .SRV => {
+                            var srv_token = std.mem.splitAny(u8, data, ":");
+                            const host = srv_token.next().?;
+                            const port = srv_token.next() orelse return DeviceError.INVALID_RESPONSE;
+                            const port_num = std.fmt.parseInt(u16, port, 10) catch return DeviceError.INVALID_RESPONSE;
+                            mdns(.{ .service = .{ .hostname = host, .port = port_num } }, self.mdns_userdata);
+                        },
+                        .A => {
+                            mdns(.{ .ipv4 = data }, self.mdns_userdata);
+                        },
+                        .AAAA => {
+                            mdns(.{ .ipv6 = data }, self.mdns_userdata);
+                        },
+                        .TXT => {
+                            const value = tokens.next() orelse "";
+                            mdns(.{ .txt_param = .{ .key = data, .value = value } }, self.mdns_userdata);
+                        },
+                    }
+                }
+            }
+        }
+
+        fn mdns_error(self: *Self) void {
+            if (self.mdns_handler) |mdns| {
+                mdns(.{ .query_fail = {} }, self.mdns_userdata);
+            }
+            self.mdns_handler = null;
+            self.mdns_userdata = null;
+        }
+
         fn create_client(self: *Self, id: usize) Client {
             return Client{
                 .accept_fn = Self.accpet_fn,
@@ -782,6 +867,15 @@ pub fn NetworkDevice(binds: usize) type {
                 if ((len >= 10) or len == 0) return TcpIPError.INVALID_MDNS_REPORT;
             }
             self.cmd_queue.insertAssumeCapacity(0, .{ .pkg_type = .{ .create_mDNS = config } });
+            self.runner_dev.queue(self.id) catch unreachable;
+        }
+
+        pub fn mDNS_query(self: *Self, query: mDNSQuery) !void {
+            const free = self.runner_dev.queue_free_size();
+            const cmd_free = self.cmd_queue.capacity - self.cmd_queue.items.len;
+            if ((free < 1) or (cmd_free < 1)) return TcpIPError.QUEUE_FULL;
+            try Network.check_mdns_query(query);
+            self.cmd_queue.insertAssumeCapacity(0, .{ .pkg_type = .{ .query_mDNS = query } });
             self.runner_dev.queue(self.id) catch unreachable;
         }
 

@@ -112,18 +112,109 @@ pub const mDNSConfig = struct {
     txt_report: ?[]const TxtReport = null,
 };
 
+pub const PTRQuery = struct {
+    service: []const u8,
+    protocol: []const u8,
+};
+
+pub const TXTSRVQuery = struct {
+    instance: []const u8,
+    service: []const u8,
+    protocol: []const u8,
+};
+
+pub const AAAAQuery = struct {
+    hostname: []const u8,
+};
+
+pub const mDNSQueryType = union(enum) {
+    PTR: PTRQuery,
+    TXT: TXTSRVQuery,
+    SRV: TXTSRVQuery,
+    TXT_SRV: TXTSRVQuery,
+    A: AAAAQuery,
+    AAAA: AAAAQuery,
+    A_AAAA: AAAAQuery,
+};
+
+pub const mDNSQueryInterface = enum {
+    wifi_sta,
+    Wi_Fi_ap,
+    ethernet,
+    unknown,
+};
+
+pub const mDNSQueryIP = enum {
+    ipv6,
+    ipv4,
+};
+
+pub const mDNSNewQuery = struct {
+    interface: mDNSQueryInterface,
+    ip_type: mDNSQueryIP,
+};
+
+pub const mDNSService = struct {
+    hostname: []const u8,
+    port: u16,
+};
+
+pub const mDNSTXT = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+pub const mDNSEvent = union(enum) {
+    new_query: mDNSNewQuery,
+    instance: []const u8,
+    service: mDNSService,
+    txt_param: mDNSTXT,
+    ipv4: []const u8,
+    ipv6: []const u8,
+    query_end: void,
+    no_results: void,
+    query_fail: void,
+};
+
+pub const mDNSQuery = struct {
+    type: mDNSQueryType,
+    timeout: u32 = 5000,
+    max_results: u8 = 1,
+    handler: *const fn (mDNSEvent, ?*anyopaque) void,
+    user_data: ?*anyopaque = null,
+};
+
+pub const mDNSRecv = enum {
+    PTR,
+    SRV,
+    TXT,
+    A,
+    AAAA,
+};
+pub const mDNSRecvType = std.StaticStringMap(mDNSRecv).initComptime(
+    .{
+        .{ "PTR", mDNSRecv.PTR },
+        .{ "SRV", mDNSRecv.SRV },
+        .{ "TXT", mDNSRecv.TXT },
+        .{ "A", mDNSRecv.A },
+        .{ "AAAA", mDNSRecv.AAAA },
+    },
+);
+
 pub const PackageType = union(enum) {
     //setup
     setup: void,
     link_msg: void,
     set_mode: void,
     set_data_mode: RecvMode,
+
     //client
     SendPkg: SendPkg,
     SendToPkg: SendToPkg,
     AcceptPkg: usize,
     ClosePkg: void,
     ConnectConfig: ConnectConfig,
+
     //server
     close_server: void,
     create_server: ServerConfig,
@@ -131,6 +222,13 @@ pub const PackageType = union(enum) {
 
     //mDNS
     create_mDNS: mDNSConfig,
+    query_mDNS: mDNSQuery,
+
+    //SNTP
+    //TODO
+
+    //SSL
+    //TODO
 };
 
 pub fn set_tcp_config(writer: *std.io.Writer, id: usize, args: ConnectConfig, tcp_conf: TCPConn) !void {
@@ -198,6 +296,51 @@ pub fn check_connect_config(config: ConnectConfig) !void {
     if (config.timeout) |timeout| {
         if (timeout > 60000) return error.InvalidTimeout;
     }
+}
+
+pub fn check_mdns_query(query: mDNSQuery) !void {
+    if ((query.timeout > 180000) or (query.timeout < 1000)) return error.InvalidTimeout;
+    if (query.max_results == 0) return error.InvalidQuerySize;
+
+    switch (query.type) {
+        .PTR => |qt| {
+            if ((qt.protocol.len > 64) or (qt.service.len > 64)) return error.StringTooLong;
+        },
+        .TXT, .SRV, .TXT_SRV => |qt| {
+            if ((qt.protocol.len > 64) or (qt.service.len > 64) or (qt.instance.len > 64)) return error.StringTooLong;
+        },
+        .A, .AAAA, .A_AAAA => |qt| {
+            if (qt.hostname.len > 64) return error.StringTooLong;
+        },
+    }
+}
+
+pub fn set_mdns_query(query: mDNSQuery, writer: *std.io.Writer) void {
+    const q_type: usize = @intFromEnum(query.type);
+
+    writer.print("{s}{s}=2,{d}", .{
+        prefix,
+        "MDNS",
+        q_type,
+    }) catch unreachable;
+
+    switch (query.type) {
+        .PTR => |qt| {
+            writer.print(",\"{s}\",\"{s}\"", .{ qt.service, qt.protocol }) catch unreachable;
+        },
+        .TXT, .SRV, .TXT_SRV => |qt| {
+            writer.print(",\"{s}\",\"{s}\",\"{s}\"", .{ qt.instance, qt.service, qt.protocol }) catch unreachable;
+        },
+        .A, .AAAA, .A_AAAA => |qt| {
+            writer.print("\",{s}\"", .{qt.hostname}) catch unreachable;
+        },
+    }
+
+    writer.print(",{d},{d}{s}", .{
+        query.timeout,
+        query.max_results,
+        postfix,
+    }) catch unreachable;
 }
 
 pub const RemoteConnInfo = struct {
